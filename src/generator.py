@@ -26,7 +26,7 @@ class OpenAIGenerationRequest(BaseModel):
     org_config_id: str
     question: str
     language: Optional[str] = None  # Language code (e.g., 'en-US', 'th-TH') - if not provided, uses default
-    chat_history: Optional[List[ChatMessage]] = []  # Previous conversation history
+    chat_history: List[ChatMessage] = []  # Previous conversation history
     # Optional prompts - if not provided, will try to load from org config URLs
     generation_system_prompt: Optional[str] = None
     generation_user_prompt: Optional[str] = None

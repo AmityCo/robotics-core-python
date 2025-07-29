@@ -6,7 +6,7 @@ Handles all Gemini API validation operations
 import json
 import logging
 import requests
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from pydantic import BaseModel
 from src.app_config import config
 from src.models import ChatMessage
@@ -23,7 +23,7 @@ class GeminiValidationRequest(BaseModel):
     model: str
     generation_config: Dict[str, Any]
     gemini_api_key: str
-    chat_history: Optional[List[ChatMessage]] = []
+    chat_history: List[ChatMessage] = []
 
 
 class GeminiValidationResult(BaseModel):

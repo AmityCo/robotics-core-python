@@ -46,7 +46,7 @@ class AnswerRequest(BaseModel):
     language: str
     base64_audio: str
     org_id: str  # Organization configuration ID
-    chat_history: Optional[List[ChatMessage]] = []  # Previous conversation history
+    chat_history: List[ChatMessage] = []  # Previous conversation history
 
 @app.get("/")
 async def root():
