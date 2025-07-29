@@ -14,6 +14,7 @@ from src.app_config import config
 from src.org_config import load_org_config, OrgConfigData
 from src.km_search import KMSearchResponse
 from src.requests_handler import get_sync
+from src.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class OpenAIGenerationRequest(BaseModel):
     org_config_id: str
     question: str
     language: Optional[str] = None  # Language code (e.g., 'en-US', 'th-TH') - if not provided, uses default
+    chat_history: Optional[List[ChatMessage]] = []  # Previous conversation history
     # Optional prompts - if not provided, will try to load from org config URLs
     generation_system_prompt: Optional[str] = None
     generation_user_prompt: Optional[str] = None
@@ -153,18 +155,31 @@ def generate_answer_with_openai_with_config(
     # Replace {question} placeholder in user prompt
     user_prompt = user_prompt.format(question=request.question)
     
+    # Build messages array starting with system message
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt
+        }
+    ]
+    
+    # Add chat history to messages
+    if request.chat_history:
+        for message in request.chat_history:
+            messages.append({
+                "role": message.role,
+                "content": message.content
+            })
+    
+    # Add current user question
+    messages.append({
+        "role": "user", 
+        "content": user_prompt
+    })
+    
     openai_request_data = {
         "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user", 
-                "content": user_prompt
-            }
-        ],
+        "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens
     }
@@ -313,18 +328,31 @@ def stream_answer_with_openai_with_config(
     # Replace {question} placeholder in user prompt
     user_prompt = user_prompt.replace("{question}", request.question)
 
+    # Build messages array starting with system message
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt
+        }
+    ]
+    
+    # Add chat history to messages
+    if request.chat_history:
+        for message in request.chat_history:
+            messages.append({
+                "role": message.role,
+                "content": message.content
+            })
+    
+    # Add current user question
+    messages.append({
+        "role": "user", 
+        "content": user_prompt
+    })
+
     openai_request_data = {
         "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user", 
-                "content": user_prompt
-            }
-        ],
+        "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": True  # Enable streaming

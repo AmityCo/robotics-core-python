@@ -19,6 +19,7 @@ from src.validator import GeminiValidationRequest, validate_with_gemini
 from src.generator import OpenAIGenerationRequest, stream_answer_with_openai, stream_answer_with_openai_with_config
 from src.org_config import load_org_config
 from src.tts_stream import TTSStreamer
+from src.models import ChatMessage
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -106,7 +107,7 @@ async def get_validation_prompts_from_org_config(org_config, language: str):
     return validation_system_prompt, validation_user_prompt, validator_model
 
 
-async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str):
+async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str, chat_history: List[ChatMessage]):
     """
     Background worker function that executes the answer pipeline.
     Uses SSEHandler to send messages back to the main thread.
@@ -172,7 +173,8 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                 "maxOutputTokens": 8192,
                 "responseMimeType": "application/json"
             },
-            gemini_api_key=org_config.gemini.key
+            gemini_api_key=org_config.gemini.key,
+            chat_history=chat_history
         )
         
         validation_result = validate_with_gemini(validator_request)
@@ -230,6 +232,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         generation_request = OpenAIGenerationRequest(
             org_config_id=org_id,
             question=validation_result.correction,
+            chat_history=chat_history
         )
         
         # Helper function to send answer chunk and to TTS
@@ -427,14 +430,14 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             sse_handler.mark_component_complete('tts_processing')
 
 
-def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str):
+def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str, chat_history: List[ChatMessage]):
     """
     Synchronous wrapper for the async background function
     """
-    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id))
+    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id, chat_history))
 
 
-def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, org_id: str) -> Generator[str, None, None]:
+def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, org_id: str, chat_history: List[ChatMessage] = None) -> Generator[str, None, None]:
     """
     Execute the complete answer pipeline with Server-Sent Events.
     Validates with Gemini, searches KM, then generates answer with OpenAI GPT.
@@ -448,17 +451,21 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, o
         language: The language of the transcript
         base64_audio: Base64 encoded audio data
         org_id: Organization configuration ID
+        chat_history: Previous conversation history (optional)
         
     Yields:
         SSE formatted strings containing progress updates and results
     """
+    if chat_history is None:
+        chat_history = []
+    
     # Create SSE handler
     sse_handler = SSEHandler()
     
     # Start the background thread to execute the pipeline
     pipeline_thread = threading.Thread(
         target=_execute_answer_pipeline_sync_wrapper,
-        args=(sse_handler, transcript, language, base64_audio, org_id),
+        args=(sse_handler, transcript, language, base64_audio, org_id, chat_history),
         daemon=True
     )
     pipeline_thread.start()

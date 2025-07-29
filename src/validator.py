@@ -6,9 +6,10 @@ Handles all Gemini API validation operations
 import json
 import logging
 import requests
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 from src.app_config import config
+from src.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class GeminiValidationRequest(BaseModel):
     model: str
     generation_config: Dict[str, Any]
     gemini_api_key: str
+    chat_history: Optional[List[ChatMessage]] = []
 
 
 class GeminiValidationResult(BaseModel):
@@ -36,21 +38,37 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
     """
     logger.info(f"Starting Gemini validation with model: {request.model}")
 
-    gemini_request_data = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "inlineData": {
-                            "mimeType": "audio/wav",
-                            "data": request.base64_audio,
-                        }
-                    },
-                    {"text": request.validation_user_prompt},
-                ],
+    # Build contents array starting with chat history
+    contents = []
+    
+    # Add chat history as previous conversation context
+    if request.chat_history:
+        for message in request.chat_history:
+            # Convert our ChatMessage format to Gemini format
+            gemini_role = "user" if message.role == "user" else "model"
+            contents.append({
+                "role": gemini_role,
+                "parts": [{"text": message.content}]
+            })
+    
+    # Add current user message with audio and validation prompt
+    user_parts = [
+        {
+            "inlineData": {
+                "mimeType": "audio/wav",
+                "data": request.base64_audio,
             }
-        ],
+        },
+        {"text": request.validation_user_prompt},
+    ]
+    
+    contents.append({
+        "role": "user",
+        "parts": user_parts
+    })
+
+    gemini_request_data = {
+        "contents": contents,
         "systemInstruction": {"parts": [{"text": request.validation_system_prompt}]},
         "generationConfig": {
             **request.generation_config,
@@ -87,7 +105,7 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
         ],
     }
 
-    logger.info(f"Calling Gemini API with model: {request.model}")
+    logger.info(f"Calling Gemini API with model: {request.model} and {len(request.chat_history)} chat history messages")
 
     gemini_response: requests.Response = requests.post(
         f"{config.GEMINI_API_BASE_URL}/models/{request.model}:generateContent",

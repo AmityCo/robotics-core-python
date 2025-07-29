@@ -12,6 +12,7 @@ import os
 import asyncio
 from datetime import datetime
 from src.app_config import config
+from src.models import ChatMessage
 from src.km_search import (
     KMSearchRequest, 
     KMBatchSearchRequest, 
@@ -45,6 +46,7 @@ class AnswerRequest(BaseModel):
     language: str
     base64_audio: str
     org_id: str  # Organization configuration ID
+    chat_history: Optional[List[ChatMessage]] = []  # Previous conversation history
 
 @app.get("/")
 async def root():
@@ -65,7 +67,8 @@ async def answer_sse(request: AnswerRequest):
             transcript=request.transcript,
             language=request.language,
             base64_audio=request.base64_audio,
-            org_id=request.org_id
+            org_id=request.org_id,
+            chat_history=request.chat_history or []
         ),
         media_type="text/event-stream",
         headers={

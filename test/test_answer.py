@@ -39,7 +39,7 @@ def encode_audio_to_base64(audio_bytes: bytes) -> str:
     """Encode audio bytes to base64 string"""
     return base64.b64encode(audio_bytes).decode('utf-8')
 
-def send_answer_request_sse(transcript: str, audio_url: str, language: str = "en") -> Dict[str, Any]:
+def send_answer_request_sse(transcript: str, audio_url: str, language: str = "en", chat_history: list = None) -> Dict[str, Any]:
     """
     Send request to the SSE answer API endpoint and collect streaming results
     
@@ -47,6 +47,7 @@ def send_answer_request_sse(transcript: str, audio_url: str, language: str = "en
         transcript: The transcript text
         audio_url: URL to download the audio file
         language: Language code (default: "en")
+        chat_history: Previous conversation history (optional)
     
     Returns:
         Combined results with timing information
@@ -68,8 +69,14 @@ def send_answer_request_sse(transcript: str, audio_url: str, language: str = "en
             "org_id": ORG_ID
         }
         
+        # Add chat history if provided
+        if chat_history:
+            payload["chat_history"] = chat_history
+        
         # Send request to SSE answer API
         logger.info(f"Sending SSE request to answer API for transcript: {transcript[:50]}...")
+        if chat_history:
+            logger.info(f"Including chat history with {len(chat_history)} messages")
         
         # Track timing for each stage
         start_time = time.time()
@@ -163,7 +170,7 @@ def send_answer_request_sse(transcript: str, audio_url: str, language: str = "en
         logger.error(f"Unexpected error: {e}")
         raise
 
-def send_answer_request(transcript: str, audio_url: str, language: str = "en") -> Dict[str, Any]:
+def send_answer_request(transcript: str, audio_url: str, language: str = "en", chat_history: list = None) -> Dict[str, Any]:
     """
     Send request to the regular answer API endpoint (non-SSE)
     
@@ -171,6 +178,7 @@ def send_answer_request(transcript: str, audio_url: str, language: str = "en") -
         transcript: The transcript text
         audio_url: URL to download the audio file
         language: Language code (default: "en")
+        chat_history: Previous conversation history (optional)
     
     Returns:
         API response as dictionary
@@ -189,8 +197,15 @@ def send_answer_request(transcript: str, audio_url: str, language: str = "en") -
             "org_id": ORG_ID
         }
         
+        # Add chat history if provided
+        if chat_history:
+            payload["chat_history"] = chat_history
+        
         # Send request to answer API
         logger.info(f"Sending request to answer API for transcript: {transcript[:50]}...")
+        if chat_history:
+            logger.info(f"Including chat history with {len(chat_history)} messages")
+        
         response = requests.post(ANSWER_ENDPOINT, json=payload)
         response.raise_for_status()
         
