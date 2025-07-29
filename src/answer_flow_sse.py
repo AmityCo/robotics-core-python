@@ -7,14 +7,16 @@ import logging
 import threading
 import base64
 import re
-import requests
+import asyncio
 from typing import Generator, Dict, List
+from requests import RequestException
 
 from src.sse_handler import SSEHandler
 from src.app_config import config
+from src.requests_handler import get as cached_get
 from src.km_search import KMBatchSearchRequest, batch_search_km
 from src.validator import GeminiValidationRequest, validate_with_gemini
-from src.generator import OpenAIGenerationRequest, stream_answer_with_openai
+from src.generator import OpenAIGenerationRequest, stream_answer_with_openai, stream_answer_with_openai_with_config
 from src.org_config import load_org_config
 from src.tts_stream import TTSStreamer
 
@@ -22,7 +24,7 @@ from src.tts_stream import TTSStreamer
 logger = logging.getLogger(__name__)
 
 
-def get_validation_prompts_from_org_config(org_config, language: str):
+async def get_validation_prompts_from_org_config(org_config, language: str):
     """
     Get validation prompts and model from organization configuration
     Tries to load from URLs first, falls back to configured prompts
@@ -54,9 +56,8 @@ def get_validation_prompts_from_org_config(org_config, language: str):
     # Try to load system prompt from URL
     if localization.validatorSystemPromptTemplateUrl:
         try:
-            response = requests.get(localization.validatorSystemPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
+            response = await cached_get(localization.validatorSystemPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
             if response.status_code == 200:
-                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 validation_system_prompt = response.text.strip()
                 logger.info("Loaded validation system prompt from localization template URL")
             else:
@@ -67,9 +68,8 @@ def get_validation_prompts_from_org_config(org_config, language: str):
     # Try to load user prompt from URL
     if localization.validatorTranscriptPromptTemplateUrl:
         try:
-            response = requests.get(localization.validatorTranscriptPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
+            response = await cached_get(localization.validatorTranscriptPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
             if response.status_code == 200:
-                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 validation_user_prompt = response.text.strip()
                 logger.info("Loaded validation user prompt from localization template URL")
             else:
@@ -80,9 +80,8 @@ def get_validation_prompts_from_org_config(org_config, language: str):
     # Fallback to Gemini config URLs if localization URLs didn't work
     if not validation_system_prompt and org_config.gemini.validatorSystemPromptTemplateUrl:
         try:
-            response = requests.get(org_config.gemini.validatorSystemPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
+            response = await cached_get(org_config.gemini.validatorSystemPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
             if response.status_code == 200:
-                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 validation_system_prompt = response.text.strip()
                 logger.info("Loaded validation system prompt from Gemini template URL")
             else:
@@ -92,9 +91,8 @@ def get_validation_prompts_from_org_config(org_config, language: str):
     
     if not validation_user_prompt and org_config.gemini.validatorTranscriptPromptTemplateUrl:
         try:
-            response = requests.get(org_config.gemini.validatorTranscriptPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
+            response = await cached_get(org_config.gemini.validatorTranscriptPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
             if response.status_code == 200:
-                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 validation_user_prompt = response.text.strip()
                 logger.info("Loaded validation user prompt from Gemini template URL")
             else:
@@ -108,7 +106,7 @@ def get_validation_prompts_from_org_config(org_config, language: str):
     return validation_system_prompt, validation_user_prompt, validator_model
 
 
-def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str):
+async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str):
     """
     Background worker function that executes the answer pipeline.
     Uses SSEHandler to send messages back to the main thread.
@@ -119,7 +117,7 @@ def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str
         logger.info("Starting answer pipeline in background thread")
         
         # Load organization configuration
-        org_config = load_org_config(org_id)
+        org_config = await load_org_config(org_id)
         if not org_config:
             sse_handler.send_error(f"Organization configuration not found for ID: {org_id}")
             return
@@ -133,7 +131,7 @@ def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str
         sse_handler.register_component('text_generation')
         
         try:
-            def tts_audio_callback(text: str, language: str, audio_data: bytes):
+            def tts_audio_callback(text: str, audio_data: bytes):
                 """Callback for when TTS audio is ready"""
                 tts_audio_data = {
                     'text': text,
@@ -145,11 +143,7 @@ def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str
                 sse_handler.send('tts_audio', data=tts_audio_data)
                 logger.info(f"TTS audio sent for text: '{text[:50]}...' (language: {language}, size: {len(audio_data)} bytes)")
             
-            def tts_completion_callback():
-                """Callback when TTS processing is complete"""
-                sse_handler.mark_component_complete('tts_processing')
-            
-            tts_streamer = TTSStreamer(org_config, chunk_callback=tts_audio_callback, completion_callback=tts_completion_callback)
+            tts_streamer = TTSStreamer(org_config, language, audio_callback=tts_audio_callback)
             sse_handler.register_component('tts_processing')
             logger.info("TTS streamer initialized successfully")
         except Exception as e:
@@ -157,7 +151,7 @@ def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str
             tts_streamer = None
         
         # Get validation prompts from org config
-        validation_system_prompt, validation_user_prompt, validator_model = get_validation_prompts_from_org_config(org_config, language)
+        validation_system_prompt, validation_user_prompt, validator_model = await get_validation_prompts_from_org_config(org_config, language)
         
         # Send validation start status
         sse_handler.send('status', message='Starting validation with Gemini')
@@ -247,7 +241,7 @@ def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str
                 # Send to TTS streamer if available
                 if tts_streamer:
                     try:
-                        tts_streamer.add_text_chunk(content, language)
+                        tts_streamer.append_text(content)
                     except Exception as e:
                         logger.warning(f"Failed to add text to TTS streamer: {str(e)}")
         
@@ -263,10 +257,11 @@ def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str
         pending_bracket_buffer = ""
         
         try:
-            # Stream the response from OpenAI
-            for chunk in stream_answer_with_openai(
+            # Stream the response from OpenAI - pass org_config to avoid reloading
+            for chunk in stream_answer_with_openai_with_config(
                 generation_request, 
-                km_result
+                km_result,
+                org_config
             ):
                 full_response += chunk
                 
@@ -388,9 +383,10 @@ def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str
             if tts_streamer:
                 try:
                     logger.info("Flushing remaining TTS content...")
-                    tts_streamer.flush_all()
+                    tts_streamer.flush()
                     logger.info("Successfully flushed remaining TTS content")
-                    # NOTE: Don't mark TTS as complete here - let the TTS completion callback handle it
+                    # Mark TTS as complete since the new API doesn't have completion callbacks
+                    sse_handler.mark_component_complete('tts_processing')
                 except Exception as e:
                     logger.error(f"Failed to flush TTS content: {str(e)}")
                     # If TTS fails, still mark it as complete to avoid hanging
@@ -413,7 +409,7 @@ def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str
 
         # Don't call mark_complete() here anymore - let the component system handle it
 
-    except requests.RequestException as e:
+    except RequestException as e:
         logger.error(f"Request error: {str(e)}")
         sse_handler.send_error(f"Request failed: {str(e)}")
         # Mark components as complete to avoid hanging
@@ -429,6 +425,13 @@ def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str
             sse_handler.mark_component_complete('text_generation')
         if 'tts_processing' in sse_handler._completion_registry:
             sse_handler.mark_component_complete('tts_processing')
+
+
+def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str):
+    """
+    Synchronous wrapper for the async background function
+    """
+    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id))
 
 
 def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, org_id: str) -> Generator[str, None, None]:
@@ -454,7 +457,7 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, o
     
     # Start the background thread to execute the pipeline
     pipeline_thread = threading.Thread(
-        target=_execute_answer_pipeline_background,
+        target=_execute_answer_pipeline_sync_wrapper,
         args=(sse_handler, transcript, language, base64_audio, org_id),
         daemon=True
     )

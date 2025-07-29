@@ -26,7 +26,7 @@ from src.answer_flow_sse import execute_answer_flow_sse, get_validation_prompts_
 
 # Configure logging with timestamp format
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )

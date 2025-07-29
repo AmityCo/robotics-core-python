@@ -6,14 +6,20 @@ Handles all OpenAI GPT API generation operations
 from datetime import datetime
 import json
 import logging
+import asyncio
 import requests
 from typing import Dict, Any, List, Optional, Generator
 from pydantic import BaseModel
 from src.app_config import config
 from src.org_config import load_org_config, OrgConfigData
 from src.km_search import KMSearchResponse
+from src.requests_handler import get_sync
 
 logger = logging.getLogger(__name__)
+
+def _load_org_config_sync(config_id: str):
+    """Synchronous wrapper for async load_org_config function"""
+    return asyncio.run(load_org_config(config_id))
 
 class OpenAIGenerationRequest(BaseModel):
     org_config_id: str
@@ -45,9 +51,24 @@ def generate_answer_with_openai(
     logger.info(f"Starting OpenAI generation for org config: {request.org_config_id}")
     
     # Load organization configuration
-    org_config = load_org_config(request.org_config_id)
+    org_config = _load_org_config_sync(request.org_config_id)
     if not org_config:
         raise ValueError(f"Organization configuration not found for ID: {request.org_config_id}")
+    
+    # Delegate to the function that accepts org_config
+    return generate_answer_with_openai_with_config(request, km_result, validation_result, org_config)
+
+
+def generate_answer_with_openai_with_config(
+    request: OpenAIGenerationRequest, 
+    km_result: KMSearchResponse,
+    validation_result: Dict[str, Any],
+    org_config: OrgConfigData
+) -> OpenAIGenerationResult:
+    """
+    Generate an answer using OpenAI GPT with KM search results and pre-loaded org config
+    """
+    logger.info(f"Starting OpenAI generation for org config: {request.org_config_id}")
     
     # Get OpenAI and Generator configurations
     openai_config = org_config.openai
@@ -84,9 +105,8 @@ def generate_answer_with_openai(
     # Load system prompt from localization config if URL is provided
     if localization_config.systemPrompt:
         try:
-            response = requests.get(localization_config.systemPrompt, timeout=config.REQUEST_TIMEOUT)
+            response = get_sync(localization_config.systemPrompt, timeout=config.REQUEST_TIMEOUT)
             if response.ok:
-                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 system_prompt = response.text
                 logger.info("Loaded system prompt from localization config")
             else:
@@ -97,9 +117,8 @@ def generate_answer_with_openai(
     # Load affirmation prompt from localization config if URL is provided
     if localization_config.affirmationPrompt:
         try:
-            response = requests.get(localization_config.affirmationPrompt, timeout=config.REQUEST_TIMEOUT)
+            response = get_sync(localization_config.affirmationPrompt, timeout=config.REQUEST_TIMEOUT)
             if response.ok:
-                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 user_prompt = response.text
                 logger.info("Loaded affirmation prompt from localization config")
             else:
@@ -192,9 +211,24 @@ def stream_answer_with_openai(
     logger.info(f"Starting streaming OpenAI generation for org config: {request.org_config_id}")
     
     # Load organization configuration
-    org_config = load_org_config(request.org_config_id)
+    org_config = _load_org_config_sync(request.org_config_id)
     if not org_config:
         raise ValueError(f"Organization configuration not found for ID: {request.org_config_id}")
+    
+    # Delegate to the function that accepts org_config
+    yield from stream_answer_with_openai_with_config(request, km_result, org_config)
+
+
+def stream_answer_with_openai_with_config(
+    request: OpenAIGenerationRequest, 
+    km_result: KMSearchResponse,
+    org_config: OrgConfigData
+) -> Generator[str, None, None]:
+    """
+    Stream answer generation using OpenAI GPT with KM search results and pre-loaded org config.
+    Yields chunks of text as they are generated.
+    """
+    logger.info(f"Starting streaming OpenAI generation for org config: {request.org_config_id}")
     
     # Get OpenAI and Generator configurations
     openai_config = org_config.openai
@@ -231,9 +265,8 @@ def stream_answer_with_openai(
     # Load system prompt from localization config if URL is provided
     if localization_config.systemPrompt:
         try:
-            response = requests.get(localization_config.systemPrompt, timeout=config.REQUEST_TIMEOUT)
+            response = get_sync(localization_config.systemPrompt, timeout=config.REQUEST_TIMEOUT)
             if response.ok:
-                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 system_prompt = response.text
                 logger.info("Loaded system prompt from localization config")
             else:
@@ -244,9 +277,8 @@ def stream_answer_with_openai(
     # Load affirmation prompt from localization config if URL is provided
     if localization_config.affirmationPrompt:
         try:
-            response = requests.get(localization_config.affirmationPrompt, timeout=config.REQUEST_TIMEOUT)
+            response = get_sync(localization_config.affirmationPrompt, timeout=config.REQUEST_TIMEOUT)
             if response.ok:
-                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 user_prompt = response.text
                 logger.info("Loaded affirmation prompt from localization config")
             else:

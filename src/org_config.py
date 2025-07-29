@@ -1,17 +1,21 @@
 """
 Organization Configuration Module
-Loads configuration data from AWS DynamoDB based on organization ID
+Loads configuration data from AWS DynamoDB based on organization ID with caching
 """
 
 import json
 import logging
-import boto3
+import asyncio
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel
-from botocore.exceptions import ClientError, NoCredentialsError
+from .cache_config import create_cache
+from .dynamodb_handler import DynamoDBHandler
 from .app_config import config as app_config
 
 logger = logging.getLogger(__name__)
+
+# Create dedicated in-memory cache for org config
+org_config_cache = create_cache("org_config_memory", backend="mem://", enabled=True)
 
 class LocalizationConfig(BaseModel):
     displayName: str
@@ -169,7 +173,7 @@ class OrgConfigData(BaseModel):
 class OrgConfig:
     """
     Organization Configuration Manager
-    Handles loading and parsing of organization-specific configuration from AWS DynamoDB
+    Handles loading and parsing of organization-specific configuration from AWS DynamoDB with caching
     """
     
     def __init__(self, table_name: str = None, region_name: str = None):
@@ -184,40 +188,36 @@ class OrgConfig:
         """
         self.table_name = table_name or app_config.DYNAMODB_TABLE_NAME
         self.region_name = region_name or app_config.DYNAMODB_REGION
-        self._dynamodb = None
-        self._table = None
+        self.dynamodb_handler = DynamoDBHandler(table_name=self.table_name, region_name=self.region_name)
     
-    def _get_dynamodb_table(self):
-        """Initialize DynamoDB connection if not already done"""
-        if self._table is None:
-            try:
-                # Use AWS credentials from app config if available
-                if app_config.AWS_ACCESS_KEY_ID and app_config.AWS_SECRET_ACCESS_KEY:
-                    self._dynamodb = boto3.resource(
-                        'dynamodb',
-                        region_name=self.region_name,
-                        aws_access_key_id=app_config.AWS_ACCESS_KEY_ID,
-                        aws_secret_access_key=app_config.AWS_SECRET_ACCESS_KEY
-                    )
-                    logger.info(f"Using configured AWS credentials from app config")
-                else:
-                    # Fall back to default credentials (IAM role, AWS CLI, etc.)
-                    self._dynamodb = boto3.resource('dynamodb', region_name=self.region_name)
-                    logger.info(f"Using default AWS credentials")
-                
-                self._table = self._dynamodb.Table(self.table_name)
-                logger.info(f"Connected to DynamoDB table: {self.table_name} in region: {self.region_name}")
-            except NoCredentialsError:
-                logger.error("AWS credentials not found. Please configure AWS credentials.")
-                raise
-            except Exception as e:
-                logger.error(f"Failed to connect to DynamoDB: {str(e)}")
-                raise
-        return self._table
-    
-    def load_config(self, config_id: str) -> Optional[OrgConfigData]:
+    @org_config_cache.early(ttl="15m", early_ttl="3m")
+    async def _load_config_from_db(self, config_id: str) -> Optional[Dict[str, Any]]:
         """
-        Load organization configuration from DynamoDB
+        Load configuration from DynamoDB with caching
+        
+        Args:
+            config_id: The configuration ID to query for
+            
+        Returns:
+            Raw configuration data if found, None if not found
+        """
+        logger.info(f"Loading organization config from DynamoDB for configId: {config_id}")
+        
+        # Query DynamoDB using configId as the key
+        item = await self.dynamodb_handler.get_item(
+            key={'configId': config_id}
+        )
+        
+        if item is None:
+            logger.warning(f"No configuration found for configId: {config_id}")
+            return None
+        
+        logger.info(f"Found configuration item for configId: {config_id}")
+        return item
+    
+    async def load_config(self, config_id: str) -> Optional[OrgConfigData]:
+        """
+        Load organization configuration from DynamoDB with caching
         
         Args:
             config_id: The configuration ID to query for
@@ -226,27 +226,16 @@ class OrgConfig:
             OrgConfigData object if found, None if not found
             
         Raises:
-            ClientError: If there's an error accessing DynamoDB
             ValueError: If the configuration data is invalid
         """
         logger.info(f"Loading organization config for configId: {config_id}")
         
         try:
-            table = self._get_dynamodb_table()
+            # Get data from cache or DynamoDB
+            item = await self._load_config_from_db(config_id)
             
-            # Query DynamoDB using configId as the key
-            response = table.get_item(
-                Key={
-                    'configId': config_id
-                }
-            )
-            
-            if 'Item' not in response:
-                logger.warning(f"No configuration found for configId: {config_id}")
+            if item is None:
                 return None
-            
-            item = response['Item']
-            logger.info(f"Found configuration item for configId: {config_id}")
             
             # Extract the configValue field
             if 'configValue' not in item:
@@ -282,11 +271,6 @@ class OrgConfig:
                 logger.error(f"Failed to validate configuration data for configId {config_id}: {str(e)}")
                 raise ValueError(f"Invalid configuration structure for configId: {config_id}")
         
-        except ClientError as e:
-            error_code = e.response['Error']['Code']
-            error_message = e.response['Error']['Message']
-            logger.error(f"DynamoDB error ({error_code}): {error_message}")
-            raise
         except Exception as e:
             logger.error(f"Unexpected error loading configuration: {str(e)}")
             raise
@@ -346,7 +330,7 @@ class OrgConfig:
         return config.openai
 
 # Convenience function for quick config loading
-def load_org_config(config_id: str, table_name: str = None, region_name: str = None) -> Optional[OrgConfigData]:
+async def load_org_config(config_id: str, table_name: str = None, region_name: str = None) -> Optional[OrgConfigData]:
     """
     Convenience function to load organization configuration
     
@@ -359,7 +343,7 @@ def load_org_config(config_id: str, table_name: str = None, region_name: str = N
         OrgConfigData object if found, None if not found
     """
     org_config = OrgConfig(table_name=table_name, region_name=region_name)
-    return org_config.load_config(config_id)
+    return await org_config.load_config(config_id)
 
 # Example usage
 if __name__ == "__main__":
@@ -372,25 +356,29 @@ if __name__ == "__main__":
     # Example config ID from the sample data
     sample_config_id = "45f9aacfe37ff6c7e072326c600a3b60"
     
-    try:
-        # Load configuration
-        config = load_org_config(sample_config_id)
-        
-        if config:
-            print(f"Loaded configuration for: {config.displayName}")
-            print(f"KM ID: {config.kmId}")
-            print(f"Default language: {config.defaultPrimaryLanguage}")
-            print(f"Available languages: {[loc.language for loc in config.localization]}")
-            print(f"Gemini validator enabled: {config.gemini.validatorEnabled}")
-            print(f"OpenAI API Key configured: {'Yes' if config.openai.apiKey else 'No'}")
+    async def main():
+        try:
+            # Load configuration
+            config = await load_org_config(sample_config_id)
             
-            # Show localization-specific prompts
-            default_loc = next((loc for loc in config.localization if loc.language == config.defaultPrimaryLanguage), None)
-            if default_loc:
-                print(f"Default language system prompt: {default_loc.systemPrompt}")
-                print(f"Default language affirmation prompt: {default_loc.affirmationPrompt}")
-        else:
-            print(f"No configuration found for ID: {sample_config_id}")
-            
-    except Exception as e:
-        print(f"Error loading configuration: {str(e)}")
+            if config:
+                print(f"Loaded configuration for: {config.displayName}")
+                print(f"KM ID: {config.kmId}")
+                print(f"Default language: {config.defaultPrimaryLanguage}")
+                print(f"Available languages: {[loc.language for loc in config.localization]}")
+                print(f"Gemini validator enabled: {config.gemini.validatorEnabled}")
+                print(f"OpenAI API Key configured: {'Yes' if config.openai.apiKey else 'No'}")
+                
+                # Show localization-specific prompts
+                default_loc = next((loc for loc in config.localization if loc.language == config.defaultPrimaryLanguage), None)
+                if default_loc:
+                    print(f"Default language system prompt: {default_loc.systemPrompt}")
+                    print(f"Default language affirmation prompt: {default_loc.affirmationPrompt}")
+            else:
+                print(f"No configuration found for ID: {sample_config_id}")
+                
+        except Exception as e:
+            print(f"Error loading configuration: {str(e)}")
+    
+    # Run the async function
+    asyncio.run(main())

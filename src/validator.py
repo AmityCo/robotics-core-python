@@ -59,6 +59,13 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
             "topP": 0.95,
             # thinking budget is 0 for gemini-2.5-flash and 128 for gemini-2.5-pro
             "thinkingConfig": {"thinkingBudget": 128 if request.model == "gemini-2.5-pro" else 0},
+            "responseSchema": {
+                "type": "object",
+                "properties": {
+                    "correction": {"type": "string"},
+                    "keywords": {"type": "array", "items": {"type": "string"}},
+                },
+            }
         },
         "safetySettings": [
             {
