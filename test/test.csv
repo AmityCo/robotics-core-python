@@ -1,0 +1,3 @@
+audioUrl,answer,original_s3_url,transcript
+https://storage.googleapis.com/amity-robotics-audio-files/audio-training-data/a6ba56ef_1735724492395.wav,Sushiro อยู่ไหนหรอ Sushiro อยู่ไหนหรอ,https://amity-merlin-downloadable.s3.amazonaws.com/audios/45f9aacfe37ff6c7e072326c601c4c35/1735724492395.wav,
+https://storage.googleapis.com/amity-robotics-audio-files/audio-training-data/a90ab61e_1735801492714.wav,what floor is Loro piano on,https://amity-merlin-downloadable.s3.amazonaws.com/audios/45f9aacfe37ff6c7e072326c601c4c35/1735801492714.wav

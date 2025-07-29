@@ -1,0 +1,48 @@
+[
+  {
+    "row": 1,
+    "audio_url": "https://storage.googleapis.com/amity-robotics-audio-files/audio-training-data/a6ba56ef_1735724492395.wav",
+    "transcript": "",
+    "expected_answer": "Sushiro อยู่ไหนหรอ Sushiro อยู่ไหนหรอ",
+    "generated_answer": "<thinking>\nUser's query: Sushiro อยู่ไหนหรอ \nIntent: User asking for location of Sushiro store.\nFAQ check: Checking for FAQ document match. No FAQ match. Searching documents.\nSearching documents for Sushiro. Result: Found in doc-386.\nQuery resolution: Specific store query handled by direct document retrieval.\n</thinking>\n\nSushiro อยู่ที่ Siam Paragon ชั้น 4 โซน Crystal Court นะคะ </s>\n</s>\n[meta:docs] {\"doc-ids\": \"doc-386\"}",
+    "model_used": "gpt-4.1-mini",
+    "language": "th",
+    "validation_correction": "Sushiro อยู่ไหนหรอ Sushiro อยู่ไหนหรอ",
+    "km_results_count": 1,
+    "stage_timings": {
+      "request_start": "2025-07-28T17:11:14.084660",
+      "validation_start": "2025-07-28T17:11:14.815528",
+      "validation_complete": "2025-07-28T17:11:19.521598",
+      "km_search_start": "2025-07-28T17:11:19.521653",
+      "km_search_complete": "2025-07-28T17:11:19.932117",
+      "answer_generation_start": "2025-07-28T17:11:19.932171",
+      "answer_generation_complete": "2025-07-28T17:11:23.966252",
+      "total_duration": 9.885743141174316
+    },
+    "api_type": "SSE",
+    "success": true
+  },
+  {
+    "row": 2,
+    "audio_url": "https://storage.googleapis.com/amity-robotics-audio-files/audio-training-data/a90ab61e_1735801492714.wav",
+    "transcript": "",
+    "expected_answer": "what floor is Loro piano on",
+    "generated_answer": "<thinking>\nUser’s query: What floor is Loro Piana on? \nIntent: To find the location floor of the store Loro Piana in the malls. \nFAQ check: Checking for FAQ document match. No FAQ match. Searching documents. \nSearching documents for Loro Piana. Result: Found in doc-691. \nQuery resolution: Handled by direct document retrieval from doc-691.\n</thinking>\n\nLoro Piana à¸à¸³à¹à¸¡à¹à¸à¸¥à¸­à¸à¹à¸ Siam Paragon à¸à¸±à¹à¸ M à¹à¸¥à¸ à¸®à¸­à¸¥ Zone </s> à¹à¸à¸±à¹à¸ 10.00 - 21.30 à¸. à¸à¹à¸° </s>\n[meta:docs] {\"doc-ids\": \"doc-691\"}",
+    "model_used": "gpt-4.1-mini",
+    "language": "en",
+    "validation_correction": "What floor is Loro Piana on?",
+    "km_results_count": 5,
+    "stage_timings": {
+      "request_start": "2025-07-28T17:11:24.183248",
+      "validation_start": "2025-07-28T17:11:24.725589",
+      "validation_complete": "2025-07-28T17:11:29.657089",
+      "km_search_start": "2025-07-28T17:11:29.657176",
+      "km_search_complete": "2025-07-28T17:11:29.937429",
+      "answer_generation_start": "2025-07-28T17:11:29.937691",
+      "answer_generation_complete": "2025-07-28T17:11:35.288234",
+      "total_duration": 11.106420040130615
+    },
+    "api_type": "SSE",
+    "success": true
+  }
+]

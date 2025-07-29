@@ -1,0 +1,171 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch ARC2 Python Server",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "DEBUG": "true",
+                "HOST": "0.0.0.0",
+                "PORT": "8000"
+            },
+            "args": [],
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "python": "${command:python.interpreterPath}",
+            "presentation": {
+                "hidden": false,
+                "group": "ARC2 Server",
+                "order": 1
+            }
+        },
+        {
+            "name": "Launch ARC2 Python Server (Production Mode)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "DEBUG": "false",
+                "HOST": "0.0.0.0",
+                "PORT": "8000"
+            },
+            "args": [],
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "python": "${command:python.interpreterPath}",
+            "presentation": {
+                "hidden": false,
+                "group": "ARC2 Server",
+                "order": 2
+            }
+        },
+        {
+            "name": "Run API Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_api.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [],
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "python": "${command:python.interpreterPath}",
+            "presentation": {
+                "hidden": false,
+                "group": "Testing",
+                "order": 3
+            }
+        },
+        {
+            "name": "Demo SSE",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/demo_sse.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [],
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "python": "${command:python.interpreterPath}",
+            "presentation": {
+                "hidden": false,
+                "group": "Demo",
+                "order": 1
+            }
+        },
+        {
+            "name": "Demo Streaming SSE",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/demo_streaming_sse.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [],
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "python": "${command:python.interpreterPath}",
+            "presentation": {
+                "hidden": false,
+                "group": "Demo",
+                "order": 2
+            }
+        },
+        {
+            "name": "Compare APIs",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/compare_apis.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [],
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "python": "${command:python.interpreterPath}",
+            "presentation": {
+                "hidden": false,
+                "group": "Demo",
+                "order": 3
+            }
+        },
+        {
+            "name": "Start React Frontend",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "npm start",
+            "cwd": "${workspaceFolder}/frontend",
+            "presentation": {
+                "hidden": false,
+                "group": "Frontend",
+                "order": 1
+            }
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Launch Full Stack (Python + React)",
+            "configurations": [
+                "Launch ARC2 Python Server"
+            ],
+            "preLaunchTask": "Start Frontend Dev Server",
+            "presentation": {
+                "hidden": false,
+                "group": "Full Stack",
+                "order": 1
+            },
+            "stopAll": true
+        },
+        {
+            "name": "Launch Full Stack (Production Mode)",
+            "configurations": [
+                "Launch ARC2 Python Server (Production Mode)"
+            ],
+            "preLaunchTask": "Install Frontend Dependencies",
+            "presentation": {
+                "hidden": false,
+                "group": "Full Stack",
+                "order": 2
+            },
+            "stopAll": true
+        }
+    ]
+}

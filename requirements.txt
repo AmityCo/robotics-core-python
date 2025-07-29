@@ -1,0 +1,8 @@
+fastapi==0.115.6
+uvicorn==0.32.1
+requests==2.32.3
+pydantic==2.10.4
+python-multipart==0.0.12
+boto3==1.35.93
+python-dotenv==1.0.1
+sseclient-py==1.8.0
