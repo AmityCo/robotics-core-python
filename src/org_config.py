@@ -19,8 +19,14 @@ class LocalizationConfig(BaseModel):
     language: str
     assistantId: str
     assistantKey: str
+    systemPrompt: Optional[str] = """You are a helpful AI assistant. Please provide accurate and helpful responses to user questions.
+    Context: {context}
+    Current date & time: {current_time}
+    """
+    affirmationPrompt: Optional[str] = "User Question: {question}"
     validatorTranscriptPromptTemplateUrl: Optional[str] = None
     validatorSystemPromptTemplateUrl: Optional[str] = None
+    validatorModel: Optional[str] = None
 
 class GeminiConfig(BaseModel):
     key: str
@@ -30,11 +36,6 @@ class GeminiConfig(BaseModel):
 
 class OpenAIConfig(BaseModel):
     apiKey: str
-
-class GeneratorConfig(BaseModel):
-    model: Optional[str] = "gpt-4.1-mini"
-    generatorUserPromptTemplateUrl: Optional[str] = None
-    generatorSystemPromptTemplateUrl: Optional[str] = None
 
 class ConversationConfig(BaseModel):
     answerStrategy: str
@@ -150,7 +151,6 @@ class OrgConfigData(BaseModel):
     displayLanguageLogic: str
     gemini: GeminiConfig
     openai: OpenAIConfig
-    generator: GeneratorConfig
     localization: List[LocalizationConfig]
     cameraActivation: CameraActivationConfig
     audio: AudioConfig
@@ -344,18 +344,6 @@ class OrgConfig:
             OpenAIConfig object
         """
         return config.openai
-    
-    def get_generator_config(self, config: OrgConfigData) -> GeneratorConfig:
-        """
-        Get the Generator configuration
-        
-        Args:
-            config: The organization configuration
-            
-        Returns:
-            GeneratorConfig object
-        """
-        return config.generator
 
 # Convenience function for quick config loading
 def load_org_config(config_id: str, table_name: str = None, region_name: str = None) -> Optional[OrgConfigData]:
@@ -395,8 +383,12 @@ if __name__ == "__main__":
             print(f"Available languages: {[loc.language for loc in config.localization]}")
             print(f"Gemini validator enabled: {config.gemini.validatorEnabled}")
             print(f"OpenAI API Key configured: {'Yes' if config.openai.apiKey else 'No'}")
-            print(f"Generator model: {config.generator.model}")
-            print(f"Generator transcript prompt URL: {config.generator.generatorUserPromptTemplateUrl}")
+            
+            # Show localization-specific prompts
+            default_loc = next((loc for loc in config.localization if loc.language == config.defaultPrimaryLanguage), None)
+            if default_loc:
+                print(f"Default language system prompt: {default_loc.systemPrompt}")
+                print(f"Default language affirmation prompt: {default_loc.affirmationPrompt}")
         else:
             print(f"No configuration found for ID: {sample_config_id}")
             

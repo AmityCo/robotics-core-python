@@ -27,7 +27,7 @@ def demo_sse_streaming():
             'type': 'validation_result',
             'data': {
                 'correction': 'Where is Sushiro located?',
-                'searchTerms': {'translatedQuestion': {'query': 'Sushiro location', 'keywords': ['restaurant', 'location']}}
+                'keywords': ['Sushiro', 'location', 'restaurant']
             },
             'timestamp': datetime.now().isoformat()
         },

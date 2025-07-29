@@ -92,6 +92,188 @@ FastAPI Server
 Final Response / SSE Complete
 ```
 
+## Client Integration Guide
+
+### Creating an SSE Client
+
+The `/api/v1/answer-sse` endpoint provides real-time progress updates via Server-Sent Events. Here's how to integrate with it:
+
+#### Python Client Example
+
+```python
+import requests
+import json
+
+def handle_sse_response(transcript, language, org_id, base64_audio=""):
+    payload = {
+        "transcript": transcript,
+        "language": language,
+        "base64_audio": base64_audio,
+        "org_id": org_id
+    }
+    
+    response = requests.post(
+        "http://localhost:8000/api/v1/answer-sse",
+        json=payload,
+        stream=True,
+        timeout=30
+    )
+    
+    for line in response.iter_lines():
+        if line and line.startswith(b'data: '):
+            try:
+                data = json.loads(line[6:].decode('utf-8'))
+                event_type = data.get('type')
+                
+                # Handle different event types
+                if event_type == 'status':
+                    print(f"Status: {data.get('message')}")
+                elif event_type == 'validation_result':
+                    print(f"Validation: {data['data']['correction']}")
+                elif event_type == 'km_result':
+                    print(f"KM Search: {len(data['data']['data'])} results")
+                elif event_type == 'answer_chunk':
+                    print(data['data']['content'], end='', flush=True)
+                elif event_type == 'complete':
+                    print("\nPipeline completed!")
+                    break
+                elif event_type == 'error':
+                    print(f"Error: {data.get('message')}")
+                    break
+                    
+            except json.JSONDecodeError:
+                continue
+```
+
+#### JavaScript/TypeScript Client Example
+
+```typescript
+interface SSEEvent {
+  type: string;
+  timestamp: string;
+  data?: any;
+  message?: string;
+}
+
+async function handleSSE(requestData: {
+  transcript: string;
+  language: string;
+  org_id: string;
+  base64_audio: string;
+}) {
+  const response = await fetch('http://localhost:8000/api/v1/answer-sse', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+    },
+    body: JSON.stringify(requestData)
+  });
+
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+  
+  if (!reader) return;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const event: SSEEvent = JSON.parse(line.slice(6));
+            
+            switch (event.type) {
+              case 'status':
+                console.log(`Status: ${event.message}`);
+                break;
+              case 'validation_result':
+                console.log('Validation completed:', event.data);
+                break;
+              case 'km_result':
+                console.log('KM search completed:', event.data);
+                break;
+              case 'answer_chunk':
+                document.getElementById('answer')!.textContent += event.data.content;
+                break;
+              case 'thinking':
+                console.log('AI thinking:', event.data.content);
+                break;
+              case 'metadata':
+                console.log('Metadata:', event.data);
+                break;
+              case 'tts_audio':
+                // Handle TTS audio data
+                playAudio(event.data);
+                break;
+              case 'complete':
+                console.log('Pipeline completed successfully!');
+                return;
+              case 'error':
+                console.error('Error:', event.message);
+                return;
+            }
+          } catch (e) {
+            // Skip invalid JSON lines
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+```
+
+### Available SSE Events
+
+The SSE endpoint emits the following event types:
+
+| Event Type | Description | Data Structure |
+|------------|-------------|----------------|
+| `status` | Pipeline progress updates | `{ message: string }` |
+| `validation_result` | Gemini validation completed | `{ correction: string, keywords: string[] }` |
+| `km_result` | Knowledge management search results | `{ data: array, total: number }` |
+| `answer_chunk` | Streaming answer content | `{ content: string }` |
+| `thinking` | AI reasoning process (optional) | `{ content: string }` |
+| `metadata` | Answer metadata (confidence, sources) | `{ confidence: number, sources: array }` |
+| `tts_audio` | Text-to-speech audio data | `{ audio: string, format: string }` |
+| `complete` | Pipeline finished successfully | `{ message: string }` |
+| `error` | Error occurred | `{ message: string }` |
+
+### Event Flow Sequence
+
+1. **status**: "Starting answer pipeline"
+2. **status**: "Starting validation with Gemini"
+3. **validation_result**: Corrected transcript and search terms
+4. **status**: "Starting knowledge management search"
+5. **km_result**: Search results from knowledge base
+6. **status**: "Starting answer generation with OpenAI"
+7. **answer_chunk**: Streaming answer content (multiple events)
+8. **thinking**: AI reasoning (if enabled)
+9. **metadata**: Answer metadata and sources
+10. **tts_audio**: Audio data (if TTS enabled)
+11. **complete**: Pipeline finished
+
+### Error Handling
+
+Always handle these scenarios:
+- Network timeouts (use appropriate timeout values)
+- JSON parsing errors for malformed events
+- Connection drops (implement reconnection logic)
+- Error events from the server
+
+### Demo Usage
+
+See working examples in:
+- `demo_sse.py` - Python CLI demonstration
+- `frontend/src/utils/sseClient.ts` - React/TypeScript implementation
+
 ## Requirements
 
 - Python 3.8+

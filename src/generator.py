@@ -3,6 +3,7 @@ OpenAI Generation Module
 Handles all OpenAI GPT API generation operations
 """
 
+from datetime import datetime
 import json
 import logging
 import requests
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 class OpenAIGenerationRequest(BaseModel):
     org_config_id: str
+    question: str
+    language: Optional[str] = None  # Language code (e.g., 'en-US', 'th-TH') - if not provided, uses default
     # Optional prompts - if not provided, will try to load from org config URLs
     generation_system_prompt: Optional[str] = None
     generation_user_prompt: Optional[str] = None
@@ -48,49 +51,67 @@ def generate_answer_with_openai(
     
     # Get OpenAI and Generator configurations
     openai_config = org_config.openai
-    generator_config = org_config.generator
+    
+    # Determine which language localization to use
+    language = request.language or org_config.defaultPrimaryLanguage
+    localization_config = None
+    for loc in org_config.localization:
+        if loc.language == language:
+            localization_config = loc
+            break
+    
+    if not localization_config:
+        logger.warning(f"No localization found for language {language}, using default")
+        localization_config = org_config.localization[0] if org_config.localization else None
+    
+    if not localization_config:
+        raise ValueError(f"No localization configuration available")
+    
+    logger.info(f"Using localization for language: {localization_config.language}")
     
     # Use config values with optional overrides from request
-    model = request.model or generator_config.model
+    model = "gpt-4.1-mini" if not request.model else request.model
     api_key = request.openai_api_key or openai_config.apiKey
     temperature = request.temperature if request.temperature is not None else 0.7
     max_tokens = request.max_tokens or 2048
     
     logger.info(f"Using OpenAI model: {model}")
     
-    # Load prompt templates if configured, otherwise use request prompts
+    # Load prompt templates from localization config, otherwise use request prompts
     system_prompt = request.generation_system_prompt or ""
     user_prompt = request.generation_user_prompt or ""
     
-    # Load system prompt template if URL is provided
-    if generator_config.generatorSystemPromptTemplateUrl:
+    # Load system prompt from localization config if URL is provided
+    if localization_config.systemPrompt:
         try:
-            response = requests.get(generator_config.generatorSystemPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
+            response = requests.get(localization_config.systemPrompt, timeout=config.REQUEST_TIMEOUT)
             if response.ok:
+                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 system_prompt = response.text
-                logger.info("Loaded system prompt from template URL")
+                logger.info("Loaded system prompt from localization config")
             else:
-                logger.warning(f"Failed to load system prompt template: HTTP {response.status_code}")
+                logger.warning(f"Failed to load system prompt from localization: HTTP {response.status_code}")
         except Exception as e:
-            logger.warning(f"Failed to load system prompt template: {e}")
+            logger.warning(f"Failed to load system prompt from localization: {e}")
     
-    # Load user prompt template if URL is provided
-    if generator_config.generatorUserPromptTemplateUrl:
+    # Load affirmation prompt from localization config if URL is provided
+    if localization_config.affirmationPrompt:
         try:
-            response = requests.get(generator_config.generatorUserPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
+            response = requests.get(localization_config.affirmationPrompt, timeout=config.REQUEST_TIMEOUT)
             if response.ok:
+                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 user_prompt = response.text
-                logger.info("Loaded user prompt from template URL")
+                logger.info("Loaded affirmation prompt from localization config")
             else:
-                logger.warning(f"Failed to load user prompt template: HTTP {response.status_code}")
+                logger.warning(f"Failed to load affirmation prompt from localization: HTTP {response.status_code}")
         except Exception as e:
-            logger.warning(f"Failed to load user prompt template: {e}")
+            logger.warning(f"Failed to load affirmation prompt from localization: {e}")
     
     # Validate that we have prompts (either from request or loaded from config)
     if not system_prompt:
-        raise ValueError("No system prompt provided in request and no system prompt template URL configured")
+        raise ValueError("No system prompt provided in request and no systemPrompt URL in localization config")
     if not user_prompt:
-        raise ValueError("No user prompt provided in request and no user prompt template URL configured")
+        raise ValueError("No user prompt provided in request and no affirmationPrompt URL in localization config")
     
     # Prepare context from KM results
     km_context = ""
@@ -105,17 +126,13 @@ def generate_answer_with_openai(
                 km_context += f"Sample Questions: {item.document.sampleQuestions}\n"
     else:
         km_context = "\n\n=== Knowledge Base Results ===\nNo relevant results found in the knowledge base.\n"
+
+    # Replace {context} and {current_time} placeholders in system prompt
+    current_time = datetime.now().isoformat()
+    system_prompt = system_prompt.format(context=km_context, current_time=current_time)
     
-    # Prepare validation context
-    validation_context = f"\n\n=== Validation Results ===\n"
-    validation_context += f"Corrected Query: {validation_result.get('correction', 'N/A')}\n"
-    
-    search_terms = validation_result.get('searchTerms', {})
-    if search_terms:
-        validation_context += f"Search Terms: {json.dumps(search_terms, indent=2)}\n"
-    
-    # Combine user prompt with context
-    enhanced_user_prompt = f"{user_prompt}\n{validation_context}\n{km_context}"
+    # Replace {question} placeholder in user prompt
+    user_prompt = user_prompt.format(question=request.question)
     
     openai_request_data = {
         "model": model,
@@ -126,7 +143,7 @@ def generate_answer_with_openai(
             },
             {
                 "role": "user", 
-                "content": enhanced_user_prompt
+                "content": user_prompt
             }
         ],
         "temperature": temperature,
@@ -166,8 +183,7 @@ def generate_answer_with_openai(
 
 def stream_answer_with_openai(
     request: OpenAIGenerationRequest, 
-    km_result: KMSearchResponse,
-    validation_result: Dict[str, Any]
+    km_result: KMSearchResponse
 ) -> Generator[str, None, None]:
     """
     Stream answer generation using OpenAI GPT with KM search results and validation data.
@@ -182,49 +198,67 @@ def stream_answer_with_openai(
     
     # Get OpenAI and Generator configurations
     openai_config = org_config.openai
-    generator_config = org_config.generator
+    
+    # Determine which language localization to use
+    language = request.language or org_config.defaultPrimaryLanguage
+    localization_config = None
+    for loc in org_config.localization:
+        if loc.language == language:
+            localization_config = loc
+            break
+    
+    if not localization_config:
+        logger.warning(f"No localization found for language {language}, using default")
+        localization_config = org_config.localization[0] if org_config.localization else None
+    
+    if not localization_config:
+        raise ValueError(f"No localization configuration available")
+    
+    logger.info(f"Using localization for language: {localization_config.language}")
     
     # Use config values with optional overrides from request
-    model = request.model or generator_config.model
+    model = "gpt-4.1-mini" if not request.model else request.model
     api_key = request.openai_api_key or openai_config.apiKey
     temperature = request.temperature if request.temperature is not None else 0.7
     max_tokens = request.max_tokens or 2048
     
     logger.info(f"Using OpenAI model: {model}")
     
-    # Load prompt templates if configured, otherwise use request prompts
+    # Load prompt templates from localization config, otherwise use request prompts
     system_prompt = request.generation_system_prompt or ""
     user_prompt = request.generation_user_prompt or ""
     
-    # Load system prompt template if URL is provided
-    if generator_config.generatorSystemPromptTemplateUrl:
+    # Load system prompt from localization config if URL is provided
+    if localization_config.systemPrompt:
         try:
-            response = requests.get(generator_config.generatorSystemPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
+            response = requests.get(localization_config.systemPrompt, timeout=config.REQUEST_TIMEOUT)
             if response.ok:
+                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 system_prompt = response.text
-                logger.info("Loaded system prompt from template URL")
+                logger.info("Loaded system prompt from localization config")
             else:
-                logger.warning(f"Failed to load system prompt template: HTTP {response.status_code}")
+                logger.warning(f"Failed to load system prompt from localization: HTTP {response.status_code}")
         except Exception as e:
-            logger.warning(f"Failed to load system prompt template: {e}")
+            logger.warning(f"Failed to load system prompt from localization: {e}")
     
-    # Load user prompt template if URL is provided
-    if generator_config.generatorUserPromptTemplateUrl:
+    # Load affirmation prompt from localization config if URL is provided
+    if localization_config.affirmationPrompt:
         try:
-            response = requests.get(generator_config.generatorUserPromptTemplateUrl, timeout=config.REQUEST_TIMEOUT)
+            response = requests.get(localization_config.affirmationPrompt, timeout=config.REQUEST_TIMEOUT)
             if response.ok:
+                response.encoding = 'utf-8'  # Ensure UTF-8 decoding for Thai/Chinese characters
                 user_prompt = response.text
-                logger.info("Loaded user prompt from template URL")
+                logger.info("Loaded affirmation prompt from localization config")
             else:
-                logger.warning(f"Failed to load user prompt template: HTTP {response.status_code}")
+                logger.warning(f"Failed to load affirmation prompt from localization: HTTP {response.status_code}")
         except Exception as e:
-            logger.warning(f"Failed to load user prompt template: {e}")
+            logger.warning(f"Failed to load affirmation prompt from localization: {e}")
     
     # Validate that we have prompts
     if not system_prompt:
-        raise ValueError("No system prompt provided in request and no system prompt template URL configured")
+        raise ValueError("No system prompt provided in request and no systemPrompt URL in localization config")
     if not user_prompt:
-        raise ValueError("No user prompt provided in request and no user prompt template URL configured")
+        raise ValueError("No user prompt provided in request and no affirmationPrompt URL in localization config")
     
     # Prepare context from KM results
     km_context = ""
@@ -240,17 +274,13 @@ def stream_answer_with_openai(
     else:
         km_context = "\n\n=== Knowledge Base Results ===\nNo relevant results found in the knowledge base.\n"
     
-    # Prepare validation context
-    validation_context = f"\n\n=== Validation Results ===\n"
-    validation_context += f"Corrected Query: {validation_result.get('correction', 'N/A')}\n"
-    
-    search_terms = validation_result.get('searchTerms', {})
-    if search_terms:
-        validation_context += f"Search Terms: {json.dumps(search_terms, indent=2)}\n"
-    
-    # Combine user prompt with context
-    enhanced_user_prompt = f"{user_prompt}\n{validation_context}\n{km_context}"
-    
+    # Replace {context} and {current_time} placeholders in system prompt
+    current_time = datetime.now().isoformat()
+    system_prompt = system_prompt.replace("{context}", km_context).replace("{current_time}", current_time)
+
+    # Replace {question} placeholder in user prompt
+    user_prompt = user_prompt.replace("{question}", request.question)
+
     openai_request_data = {
         "model": model,
         "messages": [
@@ -260,7 +290,7 @@ def stream_answer_with_openai(
             },
             {
                 "role": "user", 
-                "content": enhanced_user_prompt
+                "content": user_prompt
             }
         ],
         "temperature": temperature,

@@ -18,6 +18,9 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const prevMessageCountRef = React.useRef(0);
   const [userHasScrolled, setUserHasScrolled] = React.useState(false);
+  const playedAudioIds = React.useRef<Set<string>>(new Set());
+  const audioQueue = React.useRef<Array<{ id: string; audioData: any }>>([]);
+  const isPlayingAudio = React.useRef<boolean>(false);
 
   // Only auto-scroll when new messages arrive and user hasn't manually scrolled
   React.useEffect(() => {
@@ -28,6 +31,91 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
     }
     prevMessageCountRef.current = messages.length;
   }, [messages, userHasScrolled]);
+
+  // Clear played audio IDs when messages are cleared
+  React.useEffect(() => {
+    if (messages.length === 0) {
+      playedAudioIds.current.clear();
+      audioQueue.current = [];
+      isPlayingAudio.current = false;
+    }
+  }, [messages.length]);
+
+  // Audio queue processing function
+  const processAudioQueue = React.useCallback(async () => {
+    if (isPlayingAudio.current || audioQueue.current.length === 0) {
+      return;
+    }
+
+    isPlayingAudio.current = true;
+    const { audioData } = audioQueue.current.shift()!;
+
+    try {
+      // Convert base64 to blob and play
+      const binaryString = atob(audioData.audio_data);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      
+      // Determine the correct MIME type based on format
+      let mimeType = 'audio/mpeg'; // Default to MP3
+      if (audioData.audio_format) {
+        const formatLower = audioData.audio_format.toLowerCase();
+        if (formatLower.includes('mp3') || formatLower.includes('mpeg')) {
+          mimeType = 'audio/mpeg';
+        } else if (formatLower.includes('wav')) {
+          mimeType = 'audio/wav';
+        } else if (formatLower.includes('ogg')) {
+          mimeType = 'audio/ogg';
+        } else if (formatLower.includes('m4a') || formatLower.includes('aac')) {
+          mimeType = 'audio/mp4';
+        }
+      }
+      
+      console.log('Audio processing:', {
+        binaryLength: binaryString.length,
+        bytesLength: bytes.length,
+        mimeType: mimeType,
+        queueLength: audioQueue.current.length
+      });
+      
+      const blob = new Blob([bytes], { type: mimeType });
+      const audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
+      
+      console.log('Playing queued audio:', audioData.text, 'MIME type:', mimeType, 'Blob size:', blob.size);
+      
+      // Wait for audio to finish playing
+      await new Promise<void>((resolve, reject) => {
+        audio.addEventListener('ended', () => {
+          URL.revokeObjectURL(audioUrl);
+          console.log('Audio playback ended, cleaned up URL');
+          resolve();
+        });
+        
+        audio.addEventListener('error', (error) => {
+          URL.revokeObjectURL(audioUrl);
+          console.error('Audio playback error:', error);
+          reject(error);
+        });
+        
+        audio.play().catch(reject);
+      });
+      
+    } catch (error) {
+      console.error('Error processing queued audio:', error);
+    } finally {
+      isPlayingAudio.current = false;
+      // Process next audio in queue
+      setTimeout(() => processAudioQueue(), 100);
+    }
+  }, []);
+
+  // Effect to process audio queue when new items are added
+  React.useEffect(() => {
+    processAudioQueue();
+  }, [processAudioQueue]);
 
   // Handle user scroll to detect manual scrolling
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
@@ -166,6 +254,26 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
           content = message.data.content || '';
           break;
         
+        case 'tts_audio':
+          const audioData = message.data;
+          content = `🔊 Audio: "${audioData.text}" (${audioData.language}, ${(audioData.audio_size / 1024).toFixed(1)}KB, ${audioData.audio_format})`;
+          console.log('Received TTS audio:', {
+            text: audioData.text,
+            language: audioData.language,
+            format: audioData.audio_format,
+            audioDataLength: audioData.audio_data?.length,
+            audioSize: audioData.audio_size
+          });
+          // Add to audio queue only if not already played
+          if (audioData.audio_data && !playedAudioIds.current.has(message.id)) {
+            playedAudioIds.current.add(message.id);
+            audioQueue.current.push({ id: message.id, audioData });
+            console.log('Added audio to queue:', audioData.text, 'Queue length:', audioQueue.current.length);
+            // Trigger queue processing
+            processAudioQueue();
+          }
+          break;
+        
         default:
           content = JSON.stringify(message.data, null, 2);
       }
@@ -190,6 +298,8 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
         return 'bg-yellow-50 border-yellow-200';
       case 'answer_chunk':
         return 'bg-gray-50 border-gray-200';
+      case 'tts_audio':
+        return 'bg-indigo-50 border-indigo-200';
       case 'complete':
         return 'bg-green-100 border-green-300';
       default:

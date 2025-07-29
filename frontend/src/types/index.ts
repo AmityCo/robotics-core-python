@@ -20,16 +20,7 @@ export interface AnswerRequest {
 // Validation Data Types
 export interface ValidationData {
   correction: string;
-  searchTerms?: {
-    translatedQuestion?: {
-      query: string;
-      keywords: string[];
-    };
-    searchQueries?: Array<{
-      query: string;
-      keywords: string[];
-    }>;
-  };
+  keywords?: string[]
 }
 
 // KM Search Result Types

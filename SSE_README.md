@@ -35,7 +35,7 @@ The SSE endpoint sends different types of events during the pipeline execution:
      "type": "validation_result",
      "data": {
        "correction": "User corrected query",
-       "searchTerms": {...}
+       "keywords": []
      },
      "timestamp": "2025-01-30T10:30:05.000Z"
    }

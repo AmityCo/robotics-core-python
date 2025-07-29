@@ -44,7 +44,7 @@ When a validation request is made, the system creates two files:
   },
   "response_data": {
     "correction": "Hello, world!",
-    "search_terms": ["greeting", "world"]
+    "keywords": ["greeting", "world"]
   }
 }
 ```

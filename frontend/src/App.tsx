@@ -50,6 +50,7 @@ const App: React.FC = () => {
       eventSource.onmessage = (event: MessageEvent) => {
         try {
           const data = JSON.parse(event.data);
+          console.log('Received SSE message:', data);
           setMessages(prev => [...prev, {
             id: Date.now() + Math.random().toString(),
             timestamp: new Date().toISOString(),
@@ -154,14 +155,9 @@ const App: React.FC = () => {
                     onChange={(e) => setLanguage(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                   >
-                    <option value="en">English</option>
-                    <option value="th">Thai</option>
-                    <option value="zh">Chinese</option>
-                    <option value="es">Spanish</option>
-                    <option value="fr">French</option>
-                    <option value="de">German</option>
-                    <option value="ja">Japanese</option>
-                    <option value="ko">Korean</option>
+                    <option value="en-US">English</option>
+                    <option value="th-TH">Thai</option>
+                    <option value="zh-CN">Chinese</option>
                   </select>
                 </div>
 
