@@ -6,12 +6,274 @@ Integrates with Azure Cognitive Services TTS API.
 import logging
 import requests
 import time
+import re
+from datetime import datetime
 from typing import Optional, Callable, Dict, Any, List
 from dataclasses import dataclass
 
 from src.org_config import OrgConfigData, TTSModel
+from src.requests_handler import get as cached_get
 
 logger = logging.getLogger(__name__)
+
+@dataclass
+class TtsPhoneme:
+    """Represents a phoneme mapping for TTS"""
+    name: str
+    phoneme: Optional[str] = None
+    sub: Optional[str] = None
+
+class SSMLFormatter:
+    """
+    Handles SSML formatting for Azure TTS with phoneme processing and advanced features
+    """
+    
+    def __init__(self, azure_config, remove_bracketed_words: bool = False):
+        """
+        Initialize SSML formatter
+        
+        Args:
+            azure_config: Azure TTS configuration
+            remove_bracketed_words: Whether to remove text in brackets
+        """
+        self.azure_config = azure_config
+        self.remove_bracketed_words = remove_bracketed_words
+        self.localized_phonemes: Dict[str, List[TtsPhoneme]] = {}
+        self.global_phonemes: List[TtsPhoneme] = []
+        self.phonemes_loaded = False
+        
+    async def load_phonemes(self) -> None:
+        """Load phoneme data from configured URLs"""
+        if self.phonemes_loaded:
+            return
+            
+        try:
+            # Load global phonemes if available
+            if hasattr(self.azure_config, 'phonemeUrl') and self.azure_config.phonemeUrl:
+                self.global_phonemes = await self._load_phoneme_data(self.azure_config.phonemeUrl)
+                logger.info(f"Loaded {len(self.global_phonemes)} global phonemes")
+            
+            # Load localized phonemes for each model
+            for model in self.azure_config.models:
+                if hasattr(model, 'phonemeUrl') and model.phonemeUrl:
+                    lang_phonemes = await self._load_phoneme_data(model.phonemeUrl)
+                    if lang_phonemes:
+                        self.localized_phonemes[model.language.lower()] = lang_phonemes
+                        logger.info(f"Loaded {len(lang_phonemes)} phonemes for {model.language}")
+            
+            self.phonemes_loaded = True
+            
+        except Exception as e:
+            logger.error(f"Failed to load phonemes: {str(e)}")
+    
+    async def _load_phoneme_data(self, url: str) -> List[TtsPhoneme]:
+        """Load phoneme data from a URL using cached requests"""
+        try:
+            logger.info(f"Loading phoneme data from: {url}")
+            
+            # Use cached requests handler for better performance and caching
+            response = await cached_get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                phonemes = []
+                for item in data:
+                    if isinstance(item, dict) and 'name' in item:
+                        phoneme = TtsPhoneme(
+                            name=item['name'],
+                            phoneme=item.get('phoneme'),
+                            sub=item.get('sub')
+                        )
+                        # Only add if it has either phoneme or sub
+                        if phoneme.phoneme or phoneme.sub:
+                            phonemes.append(phoneme)
+                
+                logger.info(f"Successfully loaded {len(phonemes)} phonemes from {url}")
+                return phonemes
+            else:
+                logger.error(f"Failed to load phonemes from {url}: {response.status_code}")
+                
+        except Exception as e:
+            logger.error(f"Error loading phonemes from {url}: {str(e)}")
+        
+        return []
+    
+    def transform_text(self, text: str) -> str:
+        """
+        Transform text by removing brackets and replacing illegal characters
+        
+        Args:
+            text: Input text to transform
+            
+        Returns:
+            Transformed text
+        """
+        transformed = text
+        
+        # Remove bracketed words if configured
+        if self.remove_bracketed_words:
+            transformed = re.sub(r'\(.*?\)', '', transformed)
+        
+        # Replace illegal characters
+        transformed = (transformed
+                      .replace("&", " And ")
+                      .replace("<", "")
+                      .replace(">", "")
+                      .replace('"', "")
+                      .replace("'", ""))
+        
+        return transformed
+    
+    def transform_with_phonemes(self, text: str, language: str) -> str:
+        """
+        Transform text by applying phoneme substitutions
+        
+        Args:
+            text: Text to transform
+            language: Language code
+            
+        Returns:
+            Text with phoneme tags applied
+        """
+        language_lower = language.lower()
+        
+        # Get phonemes for this language
+        localized = self.localized_phonemes.get(language_lower, [])
+        global_phonemes = self.global_phonemes
+        
+        # Get all available names
+        all_names = []
+        for phoneme in localized:
+            if phoneme.name:
+                all_names.append(phoneme.name)
+        for phoneme in global_phonemes:
+            if phoneme.name:
+                all_names.append(phoneme.name)
+        
+        if not all_names:
+            return text
+        
+        # Remove duplicates and sort by length (longest first)
+        unique_names = list(set(all_names))
+        sorted_names = sorted(unique_names, key=len, reverse=True)
+        
+        current_text = text
+        
+        for name_key in sorted_names:
+            # Find phoneme item (prioritize localized)
+            phoneme_item = None
+            for phoneme in localized:
+                if phoneme.name == name_key:
+                    phoneme_item = phoneme
+                    break
+            
+            if not phoneme_item:
+                for phoneme in global_phonemes:
+                    if phoneme.name == name_key:
+                        phoneme_item = phoneme
+                        break
+            
+            if not phoneme_item or (not phoneme_item.sub and not phoneme_item.phoneme):
+                continue
+            
+            # Create replacement tag
+            if phoneme_item.sub:
+                replacement_tag = f'<sub alias="{phoneme_item.sub}">{name_key}</sub>'
+            else:
+                replacement_tag = f'<phoneme alphabet="ipa" ph="{phoneme_item.phoneme}">{name_key}</phoneme>'
+            
+            # Create regex pattern to avoid double-replacement
+            escaped_name = re.escape(name_key)
+            pattern = rf'(<(?:phoneme|sub)\b[^>]*>.*?</(?:phoneme|sub)>)|(\b{escaped_name}\b)'
+            
+            def replace_func(match):
+                if match.group(1):  # Already tagged
+                    return match.group(0)
+                elif match.group(2):  # Untagged word
+                    return replacement_tag
+                else:
+                    return match.group(0)
+            
+            current_text = re.sub(pattern, replace_func, current_text, flags=re.IGNORECASE | re.DOTALL)
+        
+        return current_text
+    
+    def to_bcp47_normalized(self, language: str) -> str:
+        """Convert language code to BCP47 normalized format"""
+        # Simple conversion - you might want to expand this based on your needs
+        parts = language.split('-')
+        if len(parts) >= 2:
+            return f"{parts[0].lower()}-{parts[1].upper()}"
+        return language
+    
+    def create_ssml(self, text: str, model: TTSModel, order: int = 0) -> str:
+        """
+        Create advanced SSML with all features from Kotlin implementation
+        
+        Args:
+            text: Text to convert
+            model: TTS model configuration
+            order: Order number for silence timing
+            
+        Returns:
+            Complete SSML string
+        """
+        # Transform text
+        transformed_text = self.transform_text(text)
+        
+        # Apply phoneme transformations
+        if self.phonemes_loaded:
+            phoneme_text = self.transform_with_phonemes(transformed_text, model.language)
+        else:
+            phoneme_text = transformed_text
+        
+        # Normalize language code
+        format_language = self.to_bcp47_normalized(model.language)
+        
+        # Create timestamp for lexicon caching
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        
+        # Determine leading silence
+        leading = "0ms"
+        
+        # Get model properties with defaults
+        model_name = getattr(model, 'name', 'en-US-AriaNeural')
+        pitch = getattr(model, 'pitch')
+        # if pitch is none, default to 'medium'
+        if pitch is None:
+            pitch = 'medium'
+        # Get rate, default to '1.0' if not set
+        rate = getattr(model, 'rate')
+        # if rate is none, default to '1.0'
+        if rate is None:
+            rate = '1.0'
+        
+        # Create lexicon tag if available and phonemes weren't applied
+        lexicon_tag = ""
+        if (hasattr(self.azure_config, 'lexiconURL') and 
+            self.azure_config.lexiconURL and 
+            self.azure_config.lexiconURL not in ["null", ""] and
+            transformed_text == phoneme_text):  # Only use lexicon if no phonemes were applied
+            
+            lexicon_url = f"{self.azure_config.lexiconURL}{format_language}.xml?timestamp={timestamp}"
+            lexicon_tag = f'<lexicon uri="{lexicon_url}"/>'
+        
+        # Build complete SSML
+        ssml = f'''<speak version="1.0" xml:lang="{format_language}" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts">
+    <voice xml:lang="{format_language}" xml:gender="Female" name="{model_name}">
+        {lexicon_tag}
+        <mstts:silence type="Sentenceboundary" value="0ms"/>
+        <mstts:silence type="Leading-exact" value="{leading}"/>
+        <mstts:silence type="Tailing-exact" value="0ms"/>
+        <prosody pitch="{pitch}" rate="{rate}">
+            <lang xml:lang="{format_language}">
+                {phoneme_text}
+            </lang>
+        </prosody>
+    </voice>
+</speak>'''
+        
+        return ssml
 
 @dataclass
 class TTSChunk:
@@ -42,7 +304,7 @@ class TTSStreamer:
     
     def __init__(self, org_config: OrgConfigData, language: str, 
                  audio_callback: Optional[Callable[[str, bytes], None]] = None,
-                 min_words: int = 4):
+                 min_words: int = 4, remove_bracketed_words: bool = False):
         """
         Initialize TTS streamer with organization configuration for a specific language
         
@@ -51,6 +313,7 @@ class TTSStreamer:
             language: Language code for all text chunks
             audio_callback: Callback for when audio chunks are ready (text, audio_data)
             min_words: Minimum words before triggering TTS (default: 4)
+            remove_bracketed_words: Whether to remove text in brackets
         """
         self.language = language
         self.audio_callback = audio_callback
@@ -70,10 +333,19 @@ class TTSStreamer:
         if not self.model:
             raise ValueError(f"No TTS model found for language: {language}")
         
+        # Initialize SSML formatter
+        self.ssml_formatter = SSMLFormatter(self.azure_config, remove_bracketed_words)
+        
         # Current chunk being built
         self.current_chunk = TTSChunk("")
+        self.chunk_order = 0  # Track order for SSML generation
         
         logger.info(f"Initialized TTS streamer for language: {language}, model: {self.model.name}, min_words: {min_words}")
+    
+    async def initialize(self) -> None:
+        """Initialize the TTS streamer by loading phonemes"""
+        await self.ssml_formatter.load_phonemes()
+        logger.info("TTS streamer initialization complete")
     
     def _get_model_for_language(self, language: str) -> Optional[TTSModel]:
         """
@@ -164,6 +436,7 @@ class TTSStreamer:
         
         # Create new chunk starting with the last word (if any)
         self.current_chunk = TTSChunk(last_word if last_word else "")
+        self.chunk_order += 1
 
     def _generate_speech(self, text: str) -> Optional[bytes]:
         """
@@ -176,14 +449,14 @@ class TTSStreamer:
             Audio data as bytes, or None if failed
         """
         try:
-            # Create SSML
-            ssml = self._create_ssml(text)
+            # Create SSML using the formatter
+            ssml = self.ssml_formatter.create_ssml(text, self.model, self.chunk_order)
             
             # Make TTS request
             headers = {
                 'Ocp-Apim-Subscription-Key': self.subscription_key,
                 'Content-Type': 'application/ssml+xml',
-                'X-Microsoft-OutputFormat': 'audio-16khz-128kbitrate-mono-mp3',
+                'X-Microsoft-OutputFormat': 'riff-24khz-16bit-mono-pcm',  # Updated to match Kotlin
                 'User-Agent': 'robotics-core-python'
             }
             
@@ -206,7 +479,7 @@ class TTSStreamer:
     
     def _create_ssml(self, text: str) -> str:
         """
-        Create SSML for the text
+        Create SSML for the text (legacy method, kept for backward compatibility)
         
         Args:
             text: Text to convert
@@ -214,24 +487,8 @@ class TTSStreamer:
         Returns:
             SSML string
         """
-        # Build SSML
-        ssml = f'''<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="{self.language}">
-    <voice name="{self.model.name}">'''
-        
-        # Add pitch if specified
-        if hasattr(self.model, 'pitch') and self.model.pitch:
-            ssml += f'<prosody pitch="{self.model.pitch}">'
-        
-        ssml += text
-        
-        if hasattr(self.model, 'pitch') and self.model.pitch:
-            ssml += '</prosody>'
-        
-        ssml += '''
-    </voice>
-</speak>'''
-        
-        return ssml
+        # Use the new formatter for backward compatibility
+        return self.ssml_formatter.create_ssml(text, self.model, self.chunk_order)
     
     
     def get_available_voices(self) -> Optional[List[Dict[str, Any]]]:
