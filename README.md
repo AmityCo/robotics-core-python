@@ -230,6 +230,155 @@ async function handleSSE(requestData: {
 }
 ```
 
+#### Kotlin Client Example
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlinx.serialization.*
+import kotlinx.serialization.json.*
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.BufferedReader
+import java.io.InputStreamReader
+
+@Serializable
+data class SSERequest(
+    val transcript: String,
+    val language: String,
+    val base64_audio: String,
+    val org_id: String
+)
+
+@Serializable
+data class SSEEvent(
+    val type: String,
+    val timestamp: String,
+    val data: JsonElement? = null,
+    val message: String? = null
+)
+
+class SSEClient {
+    private val client = OkHttpClient()
+    private val json = Json { ignoreUnknownKeys = true }
+
+    suspend fun handleSSE(
+        transcript: String,
+        language: String,
+        orgId: String,
+        base64Audio: String = "",
+        onEvent: (SSEEvent) -> Unit
+    ) = withContext(Dispatchers.IO) {
+        val requestData = SSERequest(
+            transcript = transcript,
+            language = language,
+            base64_audio = base64Audio,
+            org_id = orgId
+        )
+
+        val requestBody = json.encodeToString(requestData)
+            .toRequestBody("application/json".toMediaType())
+
+        val request = Request.Builder()
+            .url("http://localhost:8000/api/v1/answer-sse")
+            .post(requestBody)
+            .addHeader("Accept", "text/event-stream")
+            .addHeader("Cache-Control", "no-cache")
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw Exception("HTTP ${response.code}: ${response.message}")
+            }
+
+            val reader = BufferedReader(InputStreamReader(response.body!!.byteStream()))
+            
+            try {
+                reader.lineSequence().forEach { line ->
+                    if (line.startsWith("data: ")) {
+                        try {
+                            val eventData = line.substring(6)
+                            val event = json.decodeFromString<SSEEvent>(eventData)
+                            onEvent(event)
+                            
+                            // Break on completion or error
+                            if (event.type == "complete" || event.type == "error") {
+                                return@forEach
+                            }
+                        } catch (e: Exception) {
+                            // Skip invalid JSON lines
+                            println("Failed to parse SSE event: ${e.message}")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                println("Error reading SSE stream: ${e.message}")
+            }
+        }
+    }
+}
+
+// Usage example
+suspend fun main() {
+    val sseClient = SSEClient()
+    
+    sseClient.handleSSE(
+        transcript = "What are the office hours?",
+        language = "en",
+        orgId = "example-org-123"
+    ) { event ->
+        when (event.type) {
+            "status" -> {
+                println("Status: ${event.message}")
+            }
+            "validation_result" -> {
+                val data = event.data?.jsonObject
+                val correction = data?.get("correction")?.jsonPrimitive?.content
+                println("Validation: $correction")
+            }
+            "km_result" -> {
+                val data = event.data?.jsonObject
+                val results = data?.get("data")?.jsonArray
+                println("KM Search: ${results?.size} results")
+            }
+            "answer_chunk" -> {
+                val content = event.data?.jsonObject?.get("content")?.jsonPrimitive?.content
+                print(content)
+            }
+            "thinking" -> {
+                val content = event.data?.jsonObject?.get("content")?.jsonPrimitive?.content
+                println("AI thinking: $content")
+            }
+            "metadata" -> {
+                val docIds = event.data?.jsonObject?.get("doc_ids")?.jsonPrimitive?.content
+                println("Sources: $docIds")
+            }
+            "tts_audio" -> {
+                val audioData = event.data?.jsonObject?.get("audio")?.jsonPrimitive?.content
+                val format = event.data?.jsonObject?.get("format")?.jsonPrimitive?.content
+                println("Received TTS audio ($format)")
+                // Handle audio playback here
+            }
+            "complete" -> {
+                println("\nPipeline completed successfully!")
+            }
+            "error" -> {
+                println("Error: ${event.message}")
+            }
+        }
+    }
+}
+
+// For Android projects, add these dependencies to build.gradle.kts:
+/*
+dependencies {
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
+    implementation("com.squareup.okhttp3:okhttp:4.11.0")
+}
+*/
+```
+
 ### Available SSE Events
 
 The SSE endpoint emits the following event types:
@@ -238,10 +387,10 @@ The SSE endpoint emits the following event types:
 |------------|-------------|----------------|
 | `status` | Pipeline progress updates | `{ message: string }` |
 | `validation_result` | Gemini validation completed | `{ correction: string, keywords: string[] }` |
-| `km_result` | Knowledge management search results | `{ data: array, total: number }` |
+| `km_result` | Knowledge management search results | `{ data: {documentId: string, document: {id: string, metadata: string, publicId: string, sampleQuestions: string, content: string }, rerankerScore: number, score: number }[], total: number }` |
 | `answer_chunk` | Streaming answer content | `{ content: string }` |
 | `thinking` | AI reasoning process (optional) | `{ content: string }` |
-| `metadata` | Answer metadata (confidence, sources) | `{ confidence: number, sources: array }` |
+| `metadata` | Answer metadata (confidence, sources) | `{ doc_ids: string }` |
 | `tts_audio` | Text-to-speech audio data | `{ audio: string, format: string }` |
 | `complete` | Pipeline finished successfully | `{ message: string }` |
 | `error` | Error occurred | `{ message: string }` |

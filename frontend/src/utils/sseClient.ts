@@ -17,7 +17,7 @@ interface SSEEventSource {
 }
 
 export const sendSSERequest = async (requestData: AnswerRequest): Promise<SSEEventSource> => {
-  const { transcript, language, base64_audio, org_id } = requestData;
+  const { transcript, language, base64_audio, org_id, chat_history } = requestData;
 
   // Validate required fields
   if (!transcript || !org_id || !base64_audio) {
@@ -37,7 +37,8 @@ export const sendSSERequest = async (requestData: AnswerRequest): Promise<SSEEve
         transcript,
         language,
         base64_audio,
-        org_id
+        org_id,
+        chat_history: chat_history || []
       })
     });
 

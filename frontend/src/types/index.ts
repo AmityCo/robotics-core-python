@@ -9,12 +9,28 @@ export interface SSEMessage {
   raw?: string;
 }
 
+// Chat Message Types
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 // API Request Types
 export interface AnswerRequest {
   transcript: string;
   language: string;
   base64_audio: string;
   org_id: string;
+  chat_history?: ChatMessage[];
+}
+
+// Local Storage Types
+export interface SavedRequest {
+  transcript: string;
+  language: string;
+  org_id: string;
+  chat_history: ChatMessage[];
+  timestamp: string;
 }
 
 // Validation Data Types
@@ -44,6 +60,11 @@ export interface TranscriptInputProps {
 export interface OrgIdInputProps {
   value: string;
   onChange: (value: string) => void;
+}
+
+export interface ChatHistoryInputProps {
+  value: ChatMessage[];
+  onChange: (value: ChatMessage[]) => void;
 }
 
 export interface SSEOutputProps {

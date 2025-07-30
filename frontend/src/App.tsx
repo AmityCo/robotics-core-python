@@ -2,14 +2,18 @@ import React, { useState, useRef, useEffect } from 'react';
 import VideoUpload from './components/VideoUpload';
 import TranscriptInput from './components/TranscriptInput';
 import OrgIdInput from './components/OrgIdInput';
+import ChatHistoryInput from './components/ChatHistoryInput';
+import HistoryPanel from './components/HistoryPanel';
 import SSEOutput from './components/SSEOutput';
 import { sendSSERequest } from './utils/sseClient';
-import { SSEMessage } from './types';
+import { localStorageService } from './utils/localStorage';
+import { SSEMessage, ChatMessage } from './types';
 
 const App: React.FC = () => {
   const [transcript, setTranscript] = useState<string>('');
   const [orgId, setOrgId] = useState<string>('');
   const [language, setLanguage] = useState<string>('en');
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [base64Audio, setBase64Audio] = useState<string>('');
@@ -28,6 +32,14 @@ const App: React.FC = () => {
       return;
     }
 
+    // Save the request to localStorage before sending
+    localStorageService.saveRequest({
+      transcript: transcript.trim(),
+      language,
+      org_id: orgId.trim(),
+      chat_history: chatHistory
+    });
+
     setIsProcessing(true);
     setMessages([]);
 
@@ -42,7 +54,8 @@ const App: React.FC = () => {
         transcript: transcript.trim(),
         language,
         base64_audio: base64Audio,
-        org_id: orgId.trim()
+        org_id: orgId.trim(),
+        chat_history: chatHistory
       });
 
       eventSourceRef.current = eventSource;
@@ -113,6 +126,18 @@ const App: React.FC = () => {
     setMessages([]);
   };
 
+  const handleLoadRequest = (request: {
+    transcript: string;
+    language: string;
+    org_id: string;
+    chat_history: ChatMessage[];
+  }): void => {
+    setTranscript(request.transcript);
+    setLanguage(request.language);
+    setOrgId(request.org_id);
+    setChatHistory(request.chat_history);
+  };
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -168,6 +193,8 @@ const App: React.FC = () => {
 
                 <TranscriptInput value={transcript} onChange={setTranscript} />
 
+                <ChatHistoryInput value={chatHistory} onChange={setChatHistory} />
+
                 {/* Action Buttons */}
                 <div className="flex space-x-4">
                   <button
@@ -217,6 +244,11 @@ const App: React.FC = () => {
               
               <SSEOutput messages={messages} isProcessing={isProcessing} />
             </div>
+          </div>
+
+          {/* History Panel */}
+          <div className="mt-8">
+            <HistoryPanel onLoadRequest={handleLoadRequest} />
           </div>
 
           {/* Status Bar */}
