@@ -233,7 +233,8 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
     else if (message.data) {
       switch (message.type) {
         case 'validation_result':
-          content = `Validation: ${message.data.correction || 'Processing validation...'}`;
+          // Display the full JSON object for validation results
+          content = JSON.stringify(message.data, null, 2);
           break;
         
         case 'km_result':
@@ -337,7 +338,9 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
                   </span>
                 </div>
                 <div className="text-sm text-gray-800">
-                  <div className="whitespace-pre-wrap">
+                  <div className={`whitespace-pre-wrap ${
+                    message.type === 'validation_result' ? 'font-mono bg-gray-50 p-2 rounded border text-xs' : ''
+                  }`}>
                     {renderMessageContent(message)}
                   </div>
                 </div>

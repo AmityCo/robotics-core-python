@@ -167,7 +167,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             validation_user_prompt=validation_user_prompt,
             model=validator_model,
             generation_config={
-                "temperature": 0.1,
+                "temperature": 0.01,
                 "topP": 0.95,
                 "topK": 64,
                 "maxOutputTokens": 8192,
