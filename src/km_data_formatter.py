@@ -19,7 +19,7 @@ def extract_relevant_km_data(metadata_json: Dict, km_result) -> Dict:
         km_result: The KM search result containing data items
         
     Returns:
-        Dict of formatted data items for frontend consumption with docId as keys
+        Dict with "items" array containing formatted data items for frontend consumption
     """
     try:
         # Extract doc-ids from metadata
@@ -42,8 +42,8 @@ def extract_relevant_km_data(metadata_json: Dict, km_result) -> Dict:
         
         logger.info(f"Available publicIds in KM data: {list(km_data_lookup.keys())}")
         
-        # Create an object to store the formatted data with docId as keys
-        relevant_data_obj = {}
+        # Create an array to store the formatted data items
+        relevant_data = []
         
         # Process each doc-id and find corresponding data
         for doc_id in doc_ids:
@@ -120,19 +120,20 @@ def extract_relevant_km_data(metadata_json: Dict, km_result) -> Dict:
                 
                 # Format data according to the simplified structure
                 formatted_data = {
+                    "docId": document.publicId,
                     "title": store_name,
                     "thumbnailUrl": thumbnail_url,
                     "images": images,
                     "navigation": navigation
                 }
                 
-                # Add to object with docId as key
-                relevant_data_obj[document.publicId] = formatted_data
+                # Add to array
+                relevant_data.append(formatted_data)
                 logger.info(f"Added relevant data for doc-id: {doc_id} - {store_name}")
             else:
                 logger.warning(f"Doc-id {doc_id} not found in KM search results")
         
-        return relevant_data_obj
+        return {"items": relevant_data}
         
     except Exception as e:
         logger.error(f"Error extracting relevant KM data: {str(e)}")

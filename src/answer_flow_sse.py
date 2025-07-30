@@ -481,7 +481,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                         
                         # Send the simplified relevant data object directly
                         sse_handler.send('metadata', data=relevant_data)
-                        logger.info(f"Sent simplified metadata with {len(relevant_data)} relevant data items")
+                        logger.info(f"Sent simplified metadata with {len(relevant_data.get('items', []))} relevant data items")
                     else:
                         # If no JSON found, send raw metadata content
                         sse_handler.send('metadata', data={'raw': metadata_content.strip()})
