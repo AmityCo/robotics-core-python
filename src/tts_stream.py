@@ -231,13 +231,19 @@ class SSMLFormatter:
         
         # Get model properties with defaults
         model_name = getattr(model, 'name', 'en-US-AriaNeural')
-        pitch = getattr(model, 'pitch')
+        if not hasattr(model, 'pitch'):
+            pitch = 'medium'
+        else:
+            pitch = getattr(model, 'pitch')
         # if pitch is none, default to 'medium'
         if pitch is None:
             pitch = 'medium'
         # Get rate, default to '1.0' if not set
-        rate = getattr(model, 'rate')
-        # if rate is none, default to '1.0'
+        # check if model has rate attribute
+        if not hasattr(model, 'rate'):
+            rate = '1.0'
+        else:
+            rate = getattr(model, 'rate')
         if rate is None:
             rate = '1.0'
         
@@ -361,9 +367,17 @@ class TTSStreamer:
                 return model
         logger.debug(f"No TTS model found for language: {language}, returning default")
         # Return a default model structure if none found
+        # if thai language, name should be "th-TH-Neural2"
+        if language.startswith('th-'):
+            return type('TTSModel', (), {
+                'language': language,
+                'name': "th-TH-Neural2",  # Fallback to a common Thai model
+                'pitch': None,
+                'phonemeUrl': None
+            })()
         return type('TTSModel', (), {
             'language': language,
-            'name': "en-US-AriaNeural",  # Fallback to a common model
+            'name': "es-ES-XimenaMultilingualNeural",  # Fallback to a common model
             'pitch': None,
             'phonemeUrl': None
         })()

@@ -305,8 +305,8 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         sse_handler.send('status', message='Starting answer generation with OpenAI')
 
 
-        # Play wait1 audio after validation completion
-        sse_handler.playAudio('wait1.mp3')
+        # Play wait audio after validation completion
+        sse_handler.playAudio('wait2.mp3')
         
         # Step 3: Generate answer using OpenAI GPT with streaming
         generation_request = OpenAIGenerationRequest(
