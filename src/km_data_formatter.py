@@ -122,7 +122,7 @@ def extract_relevant_km_data(metadata_json: Dict, km_result) -> Dict:
                 formatted_data = {
                     "docId": document.publicId,
                     "title": store_name,
-                    "thumbnailUrl": thumbnail_url,
+                    "thumbnailUrl": thumbnail_url or "",
                     "images": images,
                     "navigation": navigation
                 }
