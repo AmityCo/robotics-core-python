@@ -27,7 +27,7 @@ class TTSChunk:
         self.text += text
         self.word_count = len(self.text.split(" "))
     
-    def has_minimum_words(self, min_words: int = 3) -> bool:
+    def has_minimum_words(self, min_words: int = 4) -> bool:
         """Check if chunk has minimum word count"""
         return self.word_count >= min_words
     
@@ -42,7 +42,7 @@ class TTSStreamer:
     
     def __init__(self, org_config: OrgConfigData, language: str, 
                  audio_callback: Optional[Callable[[str, bytes], None]] = None,
-                 min_words: int = 3):
+                 min_words: int = 4):
         """
         Initialize TTS streamer with organization configuration for a specific language
         
@@ -50,7 +50,7 @@ class TTSStreamer:
             org_config: Organization configuration containing TTS settings
             language: Language code for all text chunks
             audio_callback: Callback for when audio chunks are ready (text, audio_data)
-            min_words: Minimum words before triggering TTS (default: 3)
+            min_words: Minimum words before triggering TTS (default: 4)
         """
         self.language = language
         self.audio_callback = audio_callback

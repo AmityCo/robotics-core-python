@@ -41,180 +41,6 @@ class OpenAIGenerationResult(BaseModel):
     model_used: str
     raw_response: str
 
-def generate_answer_with_openai(
-    request: OpenAIGenerationRequest, 
-    km_result: KMSearchResponse,
-    validation_result: Dict[str, Any]
-) -> OpenAIGenerationResult:
-    """
-    Generate an answer using OpenAI GPT with KM search results and validation data
-    Uses organization configuration from DynamoDB
-    """
-    logger.info(f"Starting OpenAI generation for org config: {request.org_config_id}")
-    
-    # Load organization configuration
-    org_config = _load_org_config_sync(request.org_config_id)
-    if not org_config:
-        raise ValueError(f"Organization configuration not found for ID: {request.org_config_id}")
-    
-    # Delegate to the function that accepts org_config
-    return generate_answer_with_openai_with_config(request, km_result, validation_result, org_config)
-
-
-def generate_answer_with_openai_with_config(
-    request: OpenAIGenerationRequest, 
-    km_result: KMSearchResponse,
-    validation_result: Dict[str, Any],
-    org_config: OrgConfigData
-) -> OpenAIGenerationResult:
-    """
-    Generate an answer using OpenAI GPT with KM search results and pre-loaded org config
-    """
-    logger.info(f"Starting OpenAI generation for org config: {request.org_config_id}")
-    
-    # Get OpenAI and Generator configurations
-    openai_config = org_config.openai
-    
-    # Determine which language localization to use
-    language = request.language or org_config.defaultPrimaryLanguage
-    localization_config = None
-    for loc in org_config.localization:
-        if loc.language == language:
-            localization_config = loc
-            break
-    
-    if not localization_config:
-        logger.warning(f"No localization found for language {language}, using default")
-        localization_config = org_config.localization[0] if org_config.localization else None
-    
-    if not localization_config:
-        raise ValueError(f"No localization configuration available")
-    
-    logger.info(f"Using localization for language: {localization_config.language}")
-    
-    # Use config values with optional overrides from request
-    model = "gpt-4.1-mini" if not request.model else request.model
-    api_key = request.openai_api_key or openai_config.apiKey
-    temperature = request.temperature if request.temperature is not None else 0.7
-    max_tokens = request.max_tokens or 2048
-    
-    logger.info(f"Using OpenAI model: {model}")
-    
-    # Load prompt templates from localization config, otherwise use request prompts
-    system_prompt = request.generation_system_prompt or ""
-    user_prompt = request.generation_user_prompt or ""
-    
-    # Load system prompt from localization config if URL is provided
-    if localization_config.systemPrompt:
-        try:
-            response = get_sync(localization_config.systemPrompt, timeout=config.REQUEST_TIMEOUT)
-            if response.ok:
-                system_prompt = response.text
-                logger.info("Loaded system prompt from localization config")
-            else:
-                logger.warning(f"Failed to load system prompt from localization: HTTP {response.status_code}")
-        except Exception as e:
-            logger.warning(f"Failed to load system prompt from localization: {e}")
-    
-    # Load affirmation prompt from localization config if URL is provided
-    if localization_config.affirmationPrompt:
-        try:
-            response = get_sync(localization_config.affirmationPrompt, timeout=config.REQUEST_TIMEOUT)
-            if response.ok:
-                user_prompt = response.text
-                logger.info("Loaded affirmation prompt from localization config")
-            else:
-                logger.warning(f"Failed to load affirmation prompt from localization: HTTP {response.status_code}")
-        except Exception as e:
-            logger.warning(f"Failed to load affirmation prompt from localization: {e}")
-    
-    # Validate that we have prompts (either from request or loaded from config)
-    if not system_prompt:
-        raise ValueError("No system prompt provided in request and no systemPrompt URL in localization config")
-    if not user_prompt:
-        raise ValueError("No user prompt provided in request and no affirmationPrompt URL in localization config")
-    
-    # Prepare context from KM results
-    km_context = ""
-    if km_result.data:
-        km_context = "\n\n=== Knowledge Base Results ===\n"
-        for i, item in enumerate(km_result.data[:5], 1):  # Limit to top 5 results
-            km_context += f"\n{i}. **Score: {item.rerankerScore:.3f}**\n"
-            km_context += f"Content: {item.document.content}\n"
-            if item.document.title:
-                km_context += f"Title: {item.document.title}\n"
-            if item.document.sampleQuestions:
-                km_context += f"Sample Questions: {item.document.sampleQuestions}\n"
-    else:
-        km_context = "\n\n=== Knowledge Base Results ===\nNo relevant results found in the knowledge base.\n"
-
-    # Replace {context} and {current_time} placeholders in system prompt
-    current_time = datetime.now().isoformat()
-    system_prompt = system_prompt.format(context=km_context, current_time=current_time)
-    
-    # Replace {question} placeholder in user prompt
-    user_prompt = user_prompt.format(question=request.question)
-    
-    # Build messages array starting with system message
-    messages = [
-        {
-            "role": "system",
-            "content": system_prompt
-        }
-    ]
-    
-    # Add chat history to messages
-    if request.chat_history:
-        for message in request.chat_history:
-            messages.append({
-                "role": message.role,
-                "content": message.content
-            })
-    
-    # Add current user question
-    messages.append({
-        "role": "user", 
-        "content": user_prompt
-    })
-    
-    openai_request_data = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens
-    }
-
-    logger.info(f"Calling OpenAI API with model: {model}")
-    
-    openai_response: requests.Response = requests.post(
-        f"{config.OPENAI_API_BASE_URL}/chat/completions",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        },
-        json=openai_request_data,
-        timeout=config.REQUEST_TIMEOUT
-    )
-
-    if not openai_response.ok:
-        logger.error(f"OpenAI API error: {openai_response.status_code} - {openai_response.text}")
-        raise requests.HTTPError(f"OpenAI API returned {openai_response.status_code}: {openai_response.text}")
-
-    openai_data = openai_response.json()
-    logger.info(f"OpenAI generation response received")
-
-    if not openai_data.get("choices", [{}])[0].get("message", {}).get("content"):
-        raise ValueError("No response from OpenAI API")
-
-    answer = openai_data["choices"][0]["message"]["content"]
-    
-    return OpenAIGenerationResult(
-        answer=answer,
-        model_used=model,
-        raw_response=json.dumps(openai_data)
-    )
-
-
 def stream_answer_with_openai(
     request: OpenAIGenerationRequest, 
     km_result: KMSearchResponse
@@ -324,7 +150,6 @@ def stream_answer_with_openai_with_config(
     # Replace {context} and {current_time} placeholders in system prompt
     current_time = datetime.now().isoformat()
     system_prompt = system_prompt.replace("{context}", km_context).replace("{current_time}", current_time)
-
     # Replace {question} placeholder in user prompt
     user_prompt = user_prompt.replace("{question}", request.question)
 
@@ -336,14 +161,22 @@ def stream_answer_with_openai_with_config(
         }
     ]
     
-    # Add chat history to messages
+    # Add chat history to messages 
+    # if request.chat_history:
+    #     for message in request.chat_history:
+    #         messages.append({
+    #             "role": message.role,
+    #             "content": message.content
+    #         })
+    
+    # try adding to user prompt
     if request.chat_history:
         for message in request.chat_history:
-            messages.append({
-                "role": message.role,
-                "content": message.content
-            })
-    
+            if message.role == "user":
+                user_prompt = f"User: {message.content}\n" + user_prompt
+            elif message.role == "assistant":
+                user_prompt = f"Assistant: {message.content}\n" + user_prompt
+
     # Add current user question
     messages.append({
         "role": "user", 
