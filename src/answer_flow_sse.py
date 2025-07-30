@@ -172,7 +172,7 @@ async def get_validation_prompts_from_org_config(org_config, language: str):
     return validation_system_prompt, validation_user_prompt, validator_model
 
 
-async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str, chat_history: List[ChatMessage]):
+async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str, config_id: str, chat_history: List[ChatMessage]):
     """
     Background worker function that executes the answer pipeline.
     Uses SSEHandler to send messages back to the main thread.
@@ -183,9 +183,9 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         logger.info("Starting answer pipeline in background thread")
         
         # Load organization configuration
-        org_config = await load_org_config(org_id)
+        org_config = await load_org_config(org_id, config_id)
         if not org_config:
-            sse_handler.send_error(f"Organization configuration not found for ID: {org_id}")
+            sse_handler.send_error(f"Organization configuration not found for orgId: {org_id}, configId: {config_id}")
             return
         
         logger.info(f"Loaded org config for: {org_config.displayName} (kmId: {org_config.kmId})")
@@ -310,7 +310,8 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         
         # Step 3: Generate answer using OpenAI GPT with streaming
         generation_request = OpenAIGenerationRequest(
-            org_config_id=org_id,
+            org_id=org_id,
+            config_id=config_id,
             question=validation_result.correction,
             chat_history=chat_history
         )
@@ -510,14 +511,14 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             sse_handler.mark_component_complete('tts_processing')
 
 
-def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str, chat_history: List[ChatMessage]):
+def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str, config_id: str, chat_history: List[ChatMessage]):
     """
     Synchronous wrapper for the async background function
     """
-    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id, chat_history))
+    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history))
 
 
-def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, org_id: str, chat_history: List[ChatMessage] = None) -> Generator[str, None, None]:
+def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, org_id: str, config_id: str, chat_history: List[ChatMessage] = None) -> Generator[str, None, None]:
     """
     Execute the complete answer pipeline with Server-Sent Events.
     Validates with Gemini, searches KM, then generates answer with OpenAI GPT.
@@ -530,7 +531,8 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, o
         transcript: The user's transcript
         language: The language of the transcript
         base64_audio: Base64 encoded audio data
-        org_id: Organization configuration ID
+        org_id: Organization ID (partition key)
+        config_id: Configuration ID within the organization
         chat_history: Previous conversation history (optional)
         
     Yields:
@@ -545,7 +547,7 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, o
     # Start the background thread to execute the pipeline
     pipeline_thread = threading.Thread(
         target=_execute_answer_pipeline_sync_wrapper,
-        args=(sse_handler, transcript, language, base64_audio, org_id, chat_history),
+        args=(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history),
         daemon=True
     )
     pipeline_thread.start()

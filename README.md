@@ -241,6 +241,8 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.ByteArrayOutputStream
+import java.util.Base64
 
 @Serializable
 data class SSERequest(
@@ -258,16 +260,65 @@ data class SSEEvent(
     val message: String? = null
 )
 
+@Serializable
+data class TTSAudioData(
+    val text: String,
+    val language: String,
+    val audio_size: Int,
+    val audio_data: String? = null,
+    val audio_format: String,
+    val chunk_index: Int? = null,
+    val total_chunks: Int? = null,
+    val is_final: Boolean? = null
+)
+
 class SSEClient {
-    private val client = OkHttpClient()
-    private val json = Json { ignoreUnknownKeys = true }
+    private val client = OkHttpClient.Builder()
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+    private val json = Json { 
+        ignoreUnknownKeys = true
+        isLenient = true
+    }
+    
+    // Buffer for chunked audio data
+    private val audioBuffers = mutableMapOf<String, ChunkedAudioBuffer>()
+
+    data class ChunkedAudioBuffer(
+        val chunks: MutableMap<Int, String> = mutableMapOf(),
+        var totalChunks: Int = 0,
+        var text: String = "",
+        var language: String = "",
+        var format: String = "",
+        var totalSize: Int = 0
+    ) {
+        fun isComplete(): Boolean = chunks.size == totalChunks && totalChunks > 0
+        
+        fun getCompleteAudioData(): ByteArray? {
+            if (!isComplete()) return null
+            
+            val completeBase64 = StringBuilder()
+            for (i in 0 until totalChunks) {
+                chunks[i]?.let { completeBase64.append(it) }
+                    ?: return null // Missing chunk
+            }
+            
+            return try {
+                Base64.getDecoder().decode(completeBase64.toString())
+            } catch (e: Exception) {
+                println("Failed to decode complete audio data: ${e.message}")
+                null
+            }
+        }
+    }
 
     suspend fun handleSSE(
         transcript: String,
         language: String,
         orgId: String,
         base64Audio: String = "",
-        onEvent: (SSEEvent) -> Unit
+        onEvent: (SSEEvent) -> Unit,
+        onCompleteAudio: ((text: String, audioData: ByteArray, format: String, language: String) -> Unit)? = null
     ) = withContext(Dispatchers.IO) {
         val requestData = SSERequest(
             transcript = transcript,
@@ -292,13 +343,28 @@ class SSEClient {
             }
 
             val reader = BufferedReader(InputStreamReader(response.body!!.byteStream()))
+            var lineBuffer = StringBuilder()
             
             try {
                 reader.lineSequence().forEach { line ->
                     if (line.startsWith("data: ")) {
                         try {
                             val eventData = line.substring(6)
-                            val event = json.decodeFromString<SSEEvent>(eventData)
+                            
+                            // Handle potentially large JSON by streaming parse
+                            val event = try {
+                                json.decodeFromString<SSEEvent>(eventData)
+                            } catch (e: Exception) {
+                                // If JSON is too large or malformed, skip gracefully
+                                println("Skipping malformed SSE event: ${e.message}")
+                                return@forEach
+                            }
+                            
+                            // Handle chunked audio specifically
+                            if (event.type == "tts_audio") {
+                                handleTTSAudio(event, onCompleteAudio)
+                            }
+                            
                             onEvent(event)
                             
                             // Break on completion or error
@@ -306,7 +372,7 @@ class SSEClient {
                                 return@forEach
                             }
                         } catch (e: Exception) {
-                            // Skip invalid JSON lines
+                            // Log but continue processing other events
                             println("Failed to parse SSE event: ${e.message}")
                         }
                     }
@@ -316,57 +382,137 @@ class SSEClient {
             }
         }
     }
+    
+    private fun handleTTSAudio(
+        event: SSEEvent,
+        onCompleteAudio: ((String, ByteArray, String, String) -> Unit)?
+    ) {
+        try {
+            val audioData = json.decodeFromJsonElement<TTSAudioData>(
+                event.data ?: return
+            )
+            
+            // Check if this is chunked audio
+            if (audioData.chunk_index != null && audioData.total_chunks != null) {
+                handleChunkedAudio(audioData, onCompleteAudio)
+            } else {
+                // Handle single chunk audio (current implementation)
+                audioData.audio_data?.let { base64Data ->
+                    try {
+                        val audioBytes = Base64.getDecoder().decode(base64Data)
+                        onCompleteAudio?.invoke(
+                            audioData.text,
+                            audioBytes,
+                            audioData.audio_format,
+                            audioData.language
+                        )
+                    } catch (e: Exception) {
+                        println("Failed to decode audio data: ${e.message}")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            println("Failed to parse TTS audio data: ${e.message}")
+        }
+    }
+    
+    private fun handleChunkedAudio(
+        audioData: TTSAudioData,
+        onCompleteAudio: ((String, ByteArray, String, String) -> Unit)?
+    ) {
+        val audioId = "${audioData.text.hashCode()}_${audioData.language}"
+        val buffer = audioBuffers.getOrPut(audioId) { ChunkedAudioBuffer() }
+        
+        // Update buffer metadata
+        buffer.text = audioData.text
+        buffer.language = audioData.language
+        buffer.format = audioData.audio_format
+        buffer.totalSize = audioData.audio_size
+        buffer.totalChunks = audioData.total_chunks ?: 1
+        
+        // Add chunk data
+        audioData.chunk_index?.let { chunkIndex ->
+            audioData.audio_data?.let { chunkData ->
+                buffer.chunks[chunkIndex] = chunkData
+            }
+        }
+        
+        // Check if audio is complete
+        if (buffer.isComplete() || audioData.is_final == true) {
+            buffer.getCompleteAudioData()?.let { completeAudio ->
+                onCompleteAudio?.invoke(
+                    buffer.text,
+                    completeAudio,
+                    buffer.format,
+                    buffer.language
+                )
+            }
+            // Clean up buffer
+            audioBuffers.remove(audioId)
+        }
+    }
 }
 
-// Usage example
+// Usage example with robust audio handling
 suspend fun main() {
     val sseClient = SSEClient()
     
     sseClient.handleSSE(
         transcript = "What are the office hours?",
         language = "en",
-        orgId = "example-org-123"
-    ) { event ->
-        when (event.type) {
-            "status" -> {
-                println("Status: ${event.message}")
+        orgId = "example-org-123",
+        onEvent = { event ->
+            when (event.type) {
+                "status" -> {
+                    println("Status: ${event.message}")
+                }
+                "validation_result" -> {
+                    val data = event.data?.jsonObject
+                    val correction = data?.get("correction")?.jsonPrimitive?.content
+                    println("Validation: $correction")
+                }
+                "km_result" -> {
+                    val data = event.data?.jsonObject
+                    val results = data?.get("data")?.jsonArray
+                    println("KM Search: ${results?.size} results")
+                }
+                "answer_chunk" -> {
+                    val content = event.data?.jsonObject?.get("content")?.jsonPrimitive?.content
+                    print(content)
+                }
+                "thinking" -> {
+                    val content = event.data?.jsonObject?.get("content")?.jsonPrimitive?.content
+                    println("AI thinking: $content")
+                }
+                "metadata" -> {
+                    val docIds = event.data?.jsonObject?.get("doc_ids")?.jsonPrimitive?.content
+                    println("Sources: $docIds")
+                }
+                "tts_audio" -> {
+                    // Audio handling is done in onCompleteAudio callback
+                    println("Received TTS audio chunk")
+                }
+                "complete" -> {
+                    println("\nPipeline completed successfully!")
+                }
+                "error" -> {
+                    println("Error: ${event.message}")
+                }
             }
-            "validation_result" -> {
-                val data = event.data?.jsonObject
-                val correction = data?.get("correction")?.jsonPrimitive?.content
-                println("Validation: $correction")
-            }
-            "km_result" -> {
-                val data = event.data?.jsonObject
-                val results = data?.get("data")?.jsonArray
-                println("KM Search: ${results?.size} results")
-            }
-            "answer_chunk" -> {
-                val content = event.data?.jsonObject?.get("content")?.jsonPrimitive?.content
-                print(content)
-            }
-            "thinking" -> {
-                val content = event.data?.jsonObject?.get("content")?.jsonPrimitive?.content
-                println("AI thinking: $content")
-            }
-            "metadata" -> {
-                val docIds = event.data?.jsonObject?.get("doc_ids")?.jsonPrimitive?.content
-                println("Sources: $docIds")
-            }
-            "tts_audio" -> {
-                val audioData = event.data?.jsonObject?.get("audio")?.jsonPrimitive?.content
-                val format = event.data?.jsonObject?.get("format")?.jsonPrimitive?.content
-                println("Received TTS audio ($format)")
-                // Handle audio playback here
-            }
-            "complete" -> {
-                println("\nPipeline completed successfully!")
-            }
-            "error" -> {
-                println("Error: ${event.message}")
-            }
+        },
+        onCompleteAudio = { text, audioData, format, language ->
+            println("Complete audio ready: ${text.take(50)}... (${audioData.size} bytes, $format)")
+            // Play audio here
+            playAudio(audioData, format)
         }
-    }
+    )
+}
+
+// Audio playback function (implement based on your platform)
+fun playAudio(audioData: ByteArray, format: String) {
+    // Android: Use MediaPlayer with temporary file or AudioTrack
+    // Desktop: Use javax.sound.sampled or external library
+    println("Playing audio: ${audioData.size} bytes in $format format")
 }
 
 // For Android projects, add these dependencies to build.gradle.kts:
@@ -391,9 +537,32 @@ The SSE endpoint emits the following event types:
 | `answer_chunk` | Streaming answer content | `{ content: string }` |
 | `thinking` | AI reasoning process (optional) | `{ content: string }` |
 | `metadata` | Answer metadata (confidence, sources) | `{ doc_ids: string }` |
-| `tts_audio` | Text-to-speech audio data | `{ audio: string, format: string }` |
+| `tts_audio` | Text-to-speech audio data | `{ text: string, language: string, audio_size: number, audio_data: string, audio_format: string, chunk_index?: number, total_chunks?: number, is_final?: boolean }` |
 | `complete` | Pipeline finished successfully | `{ message: string }` |
 | `error` | Error occurred | `{ message: string }` |
+
+### TTS Audio Handling Considerations
+
+**Large Audio Data**: TTS audio files can be quite large (40KB-200KB+) when base64-encoded. This can cause issues with:
+
+- **SSE Message Size Limits**: Some browsers/servers limit individual SSE event sizes
+- **Memory Usage**: Large base64 strings can cause memory spikes
+- **Network Buffering**: Large chunks may cause buffering problems
+- **JSON Parsing Performance**: Very large JSON payloads are slow to parse
+
+**Current Implementation**: Audio is sent as a single large base64-encoded chunk in the `audio_data` field.
+
+**Recommended Client-Side Solutions**:
+1. **Streaming JSON Parser**: Use streaming JSON parsers for large events
+2. **Memory Management**: Immediately decode and release base64 strings
+3. **Timeout Handling**: Set appropriate timeouts for large audio chunks
+4. **Chunked Audio Support**: Implement support for potential future chunked audio (see Kotlin example above)
+
+**Future Enhancements**: The server may implement audio chunking for very large files:
+- `chunk_index`: Index of current chunk (0-based)
+- `total_chunks`: Total number of chunks for this audio
+- `is_final`: Whether this is the final chunk
+- Clients should buffer chunks and reassemble complete audio
 
 ### Event Flow Sequence
 

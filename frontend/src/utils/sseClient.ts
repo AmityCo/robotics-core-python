@@ -15,11 +15,11 @@ interface SSEEventSource {
 }
 
 export const sendSSERequest = async (requestData: AnswerRequest, apiBaseUrl: string): Promise<SSEEventSource> => {
-  const { transcript, language, base64_audio, org_id, chat_history } = requestData;
+  const { transcript, language, base64_audio, org_id, config_id, chat_history } = requestData;
 
   // Validate required fields
-  if (!transcript || !org_id || !base64_audio) {
-    throw new Error('Missing required fields: transcript, org_id, and base64_audio are required');
+  if (!transcript || !org_id || !config_id || !base64_audio) {
+    throw new Error('Missing required fields: transcript, org_id, config_id, and base64_audio are required');
   }
 
   if (!apiBaseUrl) {
@@ -40,6 +40,7 @@ export const sendSSERequest = async (requestData: AnswerRequest, apiBaseUrl: str
         language,
         base64_audio,
         org_id,
+        config_id,
         chat_history: chat_history || []
       })
     });

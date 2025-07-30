@@ -22,15 +22,16 @@ async def test_processing_message():
     """Test getting processing messages from org config"""
     
     # Test config ID (from the sample data)
+    sample_org_id = "sample_org_123"
     sample_config_id = "45f9aacfe37ff6c7e072326c600a3b60"
     
     try:
         # Load organization configuration
-        logger.info(f"Loading org config for ID: {sample_config_id}")
-        org_config = await load_org_config(sample_config_id)
+        logger.info(f"Loading org config for orgId: {sample_org_id}, configId: {sample_config_id}")
+        org_config = await load_org_config(sample_org_id, sample_config_id)
         
         if not org_config:
-            logger.error(f"No configuration found for ID: {sample_config_id}")
+            logger.error(f"No configuration found for orgId: {sample_org_id}, configId: {sample_config_id}")
             return
         
         logger.info(f"Loaded org config: {org_config.displayName}")

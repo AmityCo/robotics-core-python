@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import VideoUpload from './components/VideoUpload';
 import TranscriptInput from './components/TranscriptInput';
 import OrgIdInput from './components/OrgIdInput';
+import ConfigIdInput from './components/ConfigIdInput';
 import ChatHistoryInput from './components/ChatHistoryInput';
 import HistoryPanel from './components/HistoryPanel';
 import SSEOutput from './components/SSEOutput';
@@ -16,6 +17,9 @@ const App: React.FC = () => {
   });
   const [orgId, setOrgId] = useState<string>(() => {
     return localStorage.getItem('arc2_org_id') || '';
+  });
+  const [configId, setConfigId] = useState<string>(() => {
+    return localStorage.getItem('arc2_config_id') || '';
   });
   const [language, setLanguage] = useState<string>(() => {
     return localStorage.getItem('arc2_language') || 'en';
@@ -49,6 +53,10 @@ const App: React.FC = () => {
   }, [orgId]);
 
   useEffect(() => {
+    localStorage.setItem('arc2_config_id', configId);
+  }, [configId]);
+
+  useEffect(() => {
     localStorage.setItem('arc2_language', language);
   }, [language]);
 
@@ -62,8 +70,8 @@ const App: React.FC = () => {
   }, [apiUrl]);
 
   const handleSubmit = async (): Promise<void> => {
-    if (!transcript.trim() || !orgId.trim()) {
-      alert('Please provide both transcript and organization ID');
+    if (!transcript.trim() || !orgId.trim() || !configId.trim()) {
+      alert('Please provide transcript, organization ID, and configuration ID');
       return;
     }
 
@@ -82,6 +90,7 @@ const App: React.FC = () => {
       transcript: transcript.trim(),
       language,
       org_id: orgId.trim(),
+      config_id: configId.trim(),
       chat_history: chatHistory
     });
 
@@ -100,6 +109,7 @@ const App: React.FC = () => {
         language,
         base64_audio: base64Audio,
         org_id: orgId.trim(),
+        config_id: configId.trim(),
         chat_history: chatHistory
       }, apiUrl.trim());
 
@@ -175,6 +185,7 @@ const App: React.FC = () => {
     if (window.confirm('Are you sure you want to clear all form data? This action cannot be undone.')) {
       setTranscript('');
       setOrgId('');
+      setConfigId('');
       setLanguage('en');
       setChatHistory([]);
       setBase64Audio('');
@@ -184,6 +195,7 @@ const App: React.FC = () => {
       // Clear from localStorage as well
       localStorage.removeItem('arc2_transcript');
       localStorage.removeItem('arc2_org_id');
+      localStorage.removeItem('arc2_config_id');
       localStorage.removeItem('arc2_language');
       localStorage.removeItem('arc2_chat_history');
       localStorage.removeItem('arc2_api_url');
@@ -196,11 +208,13 @@ const App: React.FC = () => {
     transcript: string;
     language: string;
     org_id: string;
+    config_id: string;
     chat_history: ChatMessage[];
   }): void => {
     setTranscript(request.transcript);
     setLanguage(request.language);
     setOrgId(request.org_id);
+    setConfigId(request.config_id);
     setChatHistory(request.chat_history);
   };
 
@@ -247,6 +261,8 @@ const App: React.FC = () => {
                 
                 <OrgIdInput value={orgId} onChange={setOrgId} />
                 
+                <ConfigIdInput value={configId} onChange={setConfigId} />
+                
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Language
@@ -276,7 +292,7 @@ const App: React.FC = () => {
                   <div className="flex space-x-4">
                     <button
                       onClick={handleSubmit}
-                      disabled={isProcessing || !transcript.trim() || !orgId.trim() || !base64Audio || !apiUrl.trim()}
+                      disabled={isProcessing || !transcript.trim() || !orgId.trim() || !configId.trim() || !base64Audio || !apiUrl.trim()}
                       className="flex-1 bg-primary-600 text-white py-2 px-4 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
                       {isProcessing ? (

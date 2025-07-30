@@ -21,6 +21,7 @@ export interface AnswerRequest {
   language: string;
   base64_audio: string;
   org_id: string;
+  config_id: string;
   chat_history?: ChatMessage[];
 }
 
@@ -29,6 +30,7 @@ export interface SavedRequest {
   transcript: string;
   language: string;
   org_id: string;
+  config_id: string;
   chat_history: ChatMessage[];
   timestamp: string;
 }
@@ -58,6 +60,11 @@ export interface TranscriptInputProps {
 }
 
 export interface OrgIdInputProps {
+  value: string;
+  onChange: (value: string) => void;
+}
+
+export interface ConfigIdInputProps {
   value: string;
   onChange: (value: string) => void;
 }

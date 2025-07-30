@@ -34,7 +34,8 @@ class AnswerRequest(BaseModel):
     transcript: str
     language: str
     base64_audio: str
-    org_id: str  # Organization configuration ID
+    org_id: str  # Organization ID (partition key)
+    config_id: str  # Configuration ID within the organization
     chat_history: List[ChatMessage] = []  # Previous conversation history
 
 @app.get("/")
@@ -57,6 +58,7 @@ async def answer_sse(request: AnswerRequest):
             language=request.language,
             base64_audio=request.base64_audio,
             org_id=request.org_id,
+            config_id=request.config_id,
             chat_history=request.chat_history or []
         ),
         media_type="text/event-stream",

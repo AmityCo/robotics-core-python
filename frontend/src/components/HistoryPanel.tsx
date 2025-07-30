@@ -7,6 +7,7 @@ interface HistoryPanelProps {
     transcript: string;
     language: string;
     org_id: string;
+    config_id: string;
     chat_history: ChatMessage[];
   }) => void;
 }
@@ -29,6 +30,7 @@ const HistoryPanel: React.FC<HistoryPanelProps> = ({ onLoadRequest }) => {
       transcript: request.transcript,
       language: request.language,
       org_id: request.org_id,
+      config_id: request.config_id,
       chat_history: request.chat_history
     });
   };
@@ -88,7 +90,10 @@ const HistoryPanel: React.FC<HistoryPanelProps> = ({ onLoadRequest }) => {
                           {request.language}
                         </span>
                         <span className="text-xs text-gray-500">
-                          Org: {truncateText(request.org_id, 15)}
+                          Org: {truncateText(request.org_id, 12)}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          Config: {truncateText(request.config_id, 12)}
                         </span>
                       </div>
                       <p className="text-sm text-gray-700 truncate mb-1">

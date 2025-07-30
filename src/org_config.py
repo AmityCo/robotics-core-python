@@ -192,36 +192,37 @@ class OrgConfig:
         self.dynamodb_handler = DynamoDBHandler(table_name=self.table_name, region_name=self.region_name)
     
     @org_config_cache.early(ttl="15m", early_ttl="3m")
-    async def _load_config_from_db(self, config_id: str) -> Optional[Dict[str, Any]]:
+    async def _load_config_from_db(self, org_id: str) -> Optional[Dict[str, Any]]:
         """
         Load configuration from DynamoDB with caching
         
         Args:
-            config_id: The configuration ID to query for
+            org_id: The organization ID to query for (partition key in DynamoDB as configId)
             
         Returns:
             Raw configuration data if found, None if not found
         """
-        logger.info(f"Loading organization config from DynamoDB for configId: {config_id}")
+        logger.info(f"Loading organization config from DynamoDB for orgId: {org_id}")
         
-        # Query DynamoDB using configId as the key
+        # Query DynamoDB using org_id as configId (the actual partition key)
         item = await self.dynamodb_handler.get_item(
-            key={'configId': config_id}
+            key={'configId': org_id}
         )
         
         if item is None:
-            logger.warning(f"No configuration found for configId: {config_id}")
+            logger.warning(f"No configuration found for orgId: {org_id}")
             return None
         
-        logger.info(f"Found configuration item for configId: {config_id}")
+        logger.info(f"Found configuration item for orgId: {org_id}")
         return item
     
-    async def load_config(self, config_id: str) -> Optional[OrgConfigData]:
+    async def load_config(self, org_id: str, config_id: str) -> Optional[OrgConfigData]:
         """
         Load organization configuration from DynamoDB with caching
         
         Args:
-            config_id: The configuration ID to query for
+            org_id: The organization ID to query for (stored as configId partition key in DynamoDB)
+            config_id: The specific configuration ID to find within the organization's config array
             
         Returns:
             OrgConfigData object if found, None if not found
@@ -229,18 +230,18 @@ class OrgConfig:
         Raises:
             ValueError: If the configuration data is invalid
         """
-        logger.info(f"Loading organization config for configId: {config_id}")
+        logger.info(f"Loading organization config for orgId: {org_id}, configId: {config_id}")
         
         try:
-            # Get data from cache or DynamoDB
-            item = await self._load_config_from_db(config_id)
+            # Get data from cache or DynamoDB (org_id is used as the configId partition key)
+            item = await self._load_config_from_db(org_id)
             
             if item is None:
                 return None
             
             # Extract the configValue field
             if 'configValue' not in item:
-                raise ValueError(f"No 'configValue' field found in configuration for configId: {config_id}")
+                raise ValueError(f"No 'configValue' field found in configuration for orgId: {org_id}")
             
             config_value = item['configValue']
             
@@ -253,27 +254,95 @@ class OrgConfig:
                     # If configValue is already a dict/object
                     config_data = config_value
                 
-                # The sample shows configValue as an array, so take the first element
-                if isinstance(config_data, list) and len(config_data) > 0:
-                    config_data = config_data[0]
-                elif isinstance(config_data, list) and len(config_data) == 0:
-                    raise ValueError(f"Empty configuration array for configId: {config_id}")
+                # config_data should be an array of configurations
+                if not isinstance(config_data, list):
+                    raise ValueError(f"Expected configValue to be an array for orgId: {org_id}")
+                
+                if len(config_data) == 0:
+                    raise ValueError(f"Empty configuration array for orgId: {org_id}")
+                
+                # Find the specific config by configId
+                target_config = None
+                for config_item in config_data:
+                    if isinstance(config_item, dict) and config_item.get('configId') == config_id:
+                        target_config = config_item
+                        break
+                
+                if target_config is None:
+                    logger.warning(f"No configuration found with configId: {config_id} in orgId: {org_id}")
+                    return None
                 
                 # Parse and validate using Pydantic model
-                org_config = OrgConfigData.model_validate(config_data)
+                org_config = OrgConfigData.model_validate(target_config)
                 logger.info(f"Successfully loaded and validated configuration for organization: {org_config.displayName}")
                 
                 return org_config
                 
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON configuration for configId {config_id}: {str(e)}")
-                raise ValueError(f"Invalid JSON in configValue for configId: {config_id}")
+                logger.error(f"Failed to parse JSON configuration for orgId {org_id}: {str(e)}")
+                raise ValueError(f"Invalid JSON in configValue for orgId: {org_id}")
             except Exception as e:
-                logger.error(f"Failed to validate configuration data for configId {config_id}: {str(e)}")
-                raise ValueError(f"Invalid configuration structure for configId: {config_id}")
+                logger.error(f"Failed to validate configuration data for orgId {org_id}, configId {config_id}: {str(e)}")
+                raise ValueError(f"Invalid configuration structure for orgId: {org_id}, configId: {config_id}")
         
         except Exception as e:
             logger.error(f"Unexpected error loading configuration: {str(e)}")
+            raise
+    
+    async def list_config_ids(self, org_id: str) -> List[str]:
+        """
+        List all available configuration IDs for an organization
+        
+        Args:
+            org_id: The organization ID to query for (stored as configId partition key in DynamoDB)
+            
+        Returns:
+            List of configuration IDs available in the organization
+            
+        Raises:
+            ValueError: If the organization data is invalid
+        """
+        logger.info(f"Listing configuration IDs for orgId: {org_id}")
+        
+        try:
+            # Get data from cache or DynamoDB (org_id is used as the configId partition key)
+            item = await self._load_config_from_db(org_id)
+            
+            if item is None:
+                logger.warning(f"No organization found for orgId: {org_id}")
+                return []
+            
+            # Extract the configValue field
+            if 'configValue' not in item:
+                raise ValueError(f"No 'configValue' field found in organization for orgId: {org_id}")
+            
+            config_value = item['configValue']
+            
+            # Parse the JSON configuration
+            try:
+                if isinstance(config_value, str):
+                    config_data = json.loads(config_value)
+                else:
+                    config_data = config_value
+                
+                if not isinstance(config_data, list):
+                    raise ValueError(f"Expected configValue to be an array for orgId: {org_id}")
+                
+                # Extract all config IDs
+                config_ids = []
+                for config_item in config_data:
+                    if isinstance(config_item, dict) and 'configId' in config_item:
+                        config_ids.append(config_item['configId'])
+                
+                logger.info(f"Found {len(config_ids)} configurations for orgId: {org_id}")
+                return config_ids
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON configuration for orgId {org_id}: {str(e)}")
+                raise ValueError(f"Invalid JSON in configValue for orgId: {org_id}")
+        
+        except Exception as e:
+            logger.error(f"Unexpected error listing configurations: {str(e)}")
             raise
     
     def get_localization_by_language(self, config: OrgConfigData, language: str) -> Optional[LocalizationConfig]:
@@ -331,12 +400,13 @@ class OrgConfig:
         return config.openai
 
 # Convenience function for quick config loading
-async def load_org_config(config_id: str, table_name: str = None, region_name: str = None) -> Optional[OrgConfigData]:
+async def load_org_config(org_id: str, config_id: str, table_name: str = None, region_name: str = None) -> Optional[OrgConfigData]:
     """
     Convenience function to load organization configuration
     
     Args:
-        config_id: The configuration ID to load
+        org_id: The organization ID to load (stored as configId partition key in DynamoDB)
+        config_id: The specific configuration ID to find within the organization's config array
         table_name: DynamoDB table name (defaults to app_config.DYNAMODB_TABLE_NAME)
         region_name: AWS region (defaults to app_config.DYNAMODB_REGION)
         
@@ -344,7 +414,23 @@ async def load_org_config(config_id: str, table_name: str = None, region_name: s
         OrgConfigData object if found, None if not found
     """
     org_config = OrgConfig(table_name=table_name, region_name=region_name)
-    return await org_config.load_config(config_id)
+    return await org_config.load_config(org_id, config_id)
+
+# Convenience function for listing config IDs
+async def list_org_config_ids(org_id: str, table_name: str = None, region_name: str = None) -> List[str]:
+    """
+    Convenience function to list all configuration IDs for an organization
+    
+    Args:
+        org_id: The organization ID to query for (stored as configId partition key in DynamoDB)
+        table_name: DynamoDB table name (defaults to app_config.DYNAMODB_TABLE_NAME)
+        region_name: AWS region (defaults to app_config.DYNAMODB_REGION)
+        
+    Returns:
+        List of configuration IDs available in the organization
+    """
+    org_config = OrgConfig(table_name=table_name, region_name=region_name)
+    return await org_config.list_config_ids(org_id)
 
 # Example usage
 if __name__ == "__main__":
@@ -354,13 +440,14 @@ if __name__ == "__main__":
     # Configure logging
     logging.basicConfig(level=logging.INFO)
     
-    # Example config ID from the sample data
+    # Example org ID and config ID from the sample data
+    sample_org_id = "sample_org_123"
     sample_config_id = "45f9aacfe37ff6c7e072326c600a3b60"
     
     async def main():
         try:
             # Load configuration
-            config = await load_org_config(sample_config_id)
+            config = await load_org_config(sample_org_id, sample_config_id)
             
             if config:
                 print(f"Loaded configuration for: {config.displayName}")
@@ -376,7 +463,7 @@ if __name__ == "__main__":
                     print(f"Default language system prompt: {default_loc.systemPrompt}")
                     print(f"Default language affirmation prompt: {default_loc.affirmationPrompt}")
             else:
-                print(f"No configuration found for ID: {sample_config_id}")
+                print(f"No configuration found for orgId: {sample_org_id}, configId: {sample_config_id}")
                 
         except Exception as e:
             print(f"Error loading configuration: {str(e)}")
