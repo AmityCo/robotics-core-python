@@ -21,12 +21,12 @@ class AudioProcessor:
     Handles audio processing operations including silence trimming and format conversion.
     """
     
-    def __init__(self, silence_threshold: float = 0.01, enable_trimming: bool = True):
+    def __init__(self, silence_threshold: float = 0.05, enable_trimming: bool = True):
         """
         Initialize audio processor
         
         Args:
-            silence_threshold: Energy threshold for silence detection (0.01 = 1% of max energy)
+            silence_threshold: Energy threshold for silence detection (0.05 = 5% of max energy)
             enable_trimming: Whether to enable audio trimming (can be disabled for speed)
         """
         self.silence_threshold = silence_threshold
@@ -89,43 +89,51 @@ class AudioProcessor:
                     end_sample = min((end_frame + 1) * frame_length, len(y))
                     
                     # For very precise trimming, do sample-level detection around the frame boundaries
-                    # Look backwards from start_sample to find exact start
+                    # Look backwards from start_sample to find exact start (more aggressive)
                     search_start = max(0, start_sample - frame_length)
                     for i in range(start_sample, search_start - 1, -1):
-                        if abs(y[i]) > threshold * 0.5:  # Use lower threshold for sample-level detection
-                            start_sample = max(0, i - int(0.01 * sr))  # Keep only 10ms padding
+                        if abs(y[i]) > threshold * 0.3:  # Use even lower threshold for more aggressive detection
+                            start_sample = max(0, i - int(0.002 * sr))  # Keep only 2ms padding
                             break
                     
-                    # Look forwards from end_sample to find exact end
+                    # Look forwards from end_sample to find exact end (more aggressive)
                     search_end = min(len(y), end_sample + frame_length)
                     for i in range(end_sample, search_end):
-                        if i < len(y) and abs(y[i]) > threshold * 0.5:
-                            end_sample = min(len(y), i + int(0.01 * sr))  # Keep only 10ms padding
+                        if i < len(y) and abs(y[i]) > threshold * 0.3:
+                            end_sample = min(len(y), i + int(0.002 * sr))  # Keep only 2ms padding
                     
                     y_trimmed = y[start_sample:end_sample]
+                    
+                    # Trim excessive mid-audio silence (more than 300ms -> reduce to 50ms)
+                    y_trimmed = self._trim_mid_silence(y_trimmed, sr, threshold)
                 else:
                     # If no energy detected above threshold, keep original
                     logger.debug("No audio energy detected above threshold, keeping original")
                     y_trimmed = y
+                    # Still trim mid-silence even if no clear speech boundaries found
+                    y_trimmed = self._trim_mid_silence(y_trimmed, sr, threshold)
             else:
                 # For very short audio, do sample-level detection
                 threshold = np.max(np.abs(y)) * self.silence_threshold
                 
-                # Find first non-silent sample
+                # Find first non-silent sample (more aggressive)
                 start_sample = 0
                 for i in range(len(y)):
                     if abs(y[i]) > threshold:
-                        start_sample = max(0, i - int(0.005 * sr))  # Keep only 5ms padding
+                        start_sample = max(0, i - int(0.001 * sr))  # Keep only 1ms padding
                         break
                 
-                # Find last non-silent sample
+                # Find last non-silent sample (more aggressive)
                 end_sample = len(y)
                 for i in range(len(y) - 1, -1, -1):
                     if abs(y[i]) > threshold:
-                        end_sample = min(len(y), i + int(0.005 * sr))  # Keep only 5ms padding
+                        end_sample = min(len(y), i + int(0.001 * sr))  # Keep only 1ms padding
                         break
                 
                 y_trimmed = y[start_sample:end_sample]
+            
+            # Trim excessive mid-audio silence (more than 300ms -> reduce to 50ms)
+            y_trimmed = self._trim_mid_silence(y_trimmed, sr, threshold)
             
             # Convert back to raw PCM bytes (will be converted to WAV later)
             y_trimmed_int = (y_trimmed * 32767).astype(np.int16)
@@ -144,6 +152,103 @@ class AudioProcessor:
             logger.error(f"Error trimming audio: {str(e)}")
             logger.info("Returning original audio data")
             return audio_data
+    
+    def _trim_mid_silence(self, y: 'np.ndarray', sr: int, threshold: float) -> 'np.ndarray':
+        """
+        Trim excessive silence in the middle of audio
+        Reduces silence longer than 300ms to 50ms
+        
+        Args:
+            y: Audio data as numpy array (normalized to [-1, 1])
+            sr: Sample rate
+            threshold: Silence threshold
+            
+        Returns:
+            Audio data with mid-silence trimmed
+        """
+        try:
+            if len(y) == 0:
+                return y
+                
+            # Define silence parameters
+            max_silence_duration = 0.3  # 300ms
+            target_silence_duration = 0.05  # 50ms
+            max_silence_samples = int(max_silence_duration * sr)
+            target_silence_samples = int(target_silence_duration * sr)
+            
+            # Use small frame size for precise detection
+            frame_length = 256  # ~16ms at 16kHz
+            frames = len(y) // frame_length
+            
+            if frames < 2:  # Too short to have meaningful mid-silence
+                return y
+            
+            # Calculate energy for each frame
+            y_frames = y[:frames * frame_length].reshape(-1, frame_length)
+            energy = np.sqrt(np.mean(y_frames**2, axis=1))
+            
+            # Identify silent frames
+            silent_frames = energy <= threshold
+            
+            # Find continuous silent regions
+            silent_regions = []
+            start_silent = None
+            
+            for i, is_silent in enumerate(silent_frames):
+                if is_silent and start_silent is None:
+                    start_silent = i
+                elif not is_silent and start_silent is not None:
+                    silent_regions.append((start_silent, i - 1))
+                    start_silent = None
+            
+            # Handle case where audio ends with silence
+            if start_silent is not None:
+                silent_regions.append((start_silent, len(silent_frames) - 1))
+            
+            # Process each silent region
+            if not silent_regions:
+                return y
+            
+            # Build new audio by processing each segment
+            new_audio_segments = []
+            last_end = 0
+            
+            for start_frame, end_frame in silent_regions:
+                # Convert frame indices to sample indices
+                start_sample = start_frame * frame_length
+                end_sample = min((end_frame + 1) * frame_length, len(y))
+                
+                # Add audio before this silent region
+                if start_sample > last_end:
+                    new_audio_segments.append(y[last_end:start_sample])
+                
+                # Check if this silent region is long enough to trim
+                silence_duration_samples = end_sample - start_sample
+                if silence_duration_samples > max_silence_samples:
+                    # Replace with shorter silence
+                    silence_replacement = np.zeros(target_silence_samples, dtype=y.dtype)
+                    new_audio_segments.append(silence_replacement)
+                    logger.debug(f"Trimmed mid-silence: {silence_duration_samples / sr:.3f}s -> {target_silence_duration:.3f}s")
+                else:
+                    # Keep original silence if it's not too long
+                    new_audio_segments.append(y[start_sample:end_sample])
+                
+                last_end = end_sample
+            
+            # Add remaining audio after the last silent region
+            if last_end < len(y):
+                new_audio_segments.append(y[last_end:])
+            
+            # Concatenate all segments
+            if new_audio_segments:
+                result = np.concatenate(new_audio_segments)
+                return result
+            else:
+                return y
+                
+        except Exception as e:
+            logger.error(f"Error trimming mid-silence: {str(e)}")
+            return y
     
     def convert_pcm_to_wav(self, pcm_data: bytes, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2) -> bytes:
         """
@@ -185,7 +290,7 @@ class AudioProcessor:
 default_audio_processor = AudioProcessor()
 
 # Convenience functions for backward compatibility
-def trim_silence(audio_data: bytes, silence_threshold: float = 0.01, enable_trimming: bool = True) -> bytes:
+def trim_silence(audio_data: bytes, silence_threshold: float = 0.05, enable_trimming: bool = True) -> bytes:
     """
     Convenience function to trim silence using default processor
     """

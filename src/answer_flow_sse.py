@@ -9,6 +9,7 @@ import base64
 import re
 import asyncio
 import os
+import random
 from typing import Generator, Dict, List
 from requests import RequestException
 
@@ -24,6 +25,69 @@ from src.models import ChatMessage
 
 # Configure logger
 logger = logging.getLogger(__name__)
+
+
+def get_random_processing_message(org_config, language: str) -> str:
+    """
+    Get a random processing message for the specified language from org config.
+    
+    Args:
+        org_config: The organization configuration
+        language: Language code (e.g., 'en-US', 'th-TH')
+        
+    Returns:
+        Random processing transcript text for the language
+    """
+    try:
+        # First try to get from avatar.processing in resources
+        if (hasattr(org_config, 'resources') and 
+            org_config.resources and 
+            hasattr(org_config.resources, 'avatar') and 
+            org_config.resources.avatar):
+            
+            avatar_dict = org_config.resources.avatar
+            if isinstance(avatar_dict, dict) and 'processing' in avatar_dict:
+                processing_items = avatar_dict['processing']
+                
+                # Filter items for the specified language
+                language_items = [item for item in processing_items 
+                                if isinstance(item, dict) and 
+                                item.get('language') == language and 
+                                'transcript' in item]
+                
+                if language_items:
+                    # Pick a random item and return its transcript
+                    random_item = random.choice(language_items)
+                    return random_item['transcript']
+        
+        # Fallback: try to get from state.processing.message
+        if (hasattr(org_config, 'state') and 
+            org_config.state and 
+            hasattr(org_config.state, 'processing') and 
+            org_config.state.processing):
+            
+            processing_dict = org_config.state.processing
+            if isinstance(processing_dict, dict) and 'message' in processing_dict:
+                messages = processing_dict['message']
+                if isinstance(messages, dict) and language in messages:
+                    return messages[language]
+        
+        # Final fallback: return a default message based on language
+        default_messages = {
+            'en-US': 'Please wait a moment',
+            'th-TH': 'กรุณารอสักครู่ค่ะ',
+            'zh-CN': '请稍等片刻',
+            'ja-JP': '少しお待ちください',
+            'ko-KR': '잠시만 기다려 주세요',
+            'ar-AE': 'من فضلك، انتظر لحظة',
+            'ru-RU': 'Пожалуйста, подождите минуту'
+        }
+        
+        return default_messages.get(language, 'Please wait a moment')
+        
+    except Exception as e:
+        logger.warning(f"Failed to get processing message for language {language}: {str(e)}")
+        return 'Please wait a moment'
 
 
 async def get_validation_prompts_from_org_config(org_config, language: str):
@@ -159,8 +223,16 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         sse_handler.send('status', message='Starting validation with Gemini')
         logger.info(f"Starting validation with Gemini using model: {validator_model}")
         
-        # Emit wait audio for validation stage
-        sse_handler.playAudio('wait1.mp3')
+        # Generate and play processing TTS message at the start of validation
+        try:
+            processing_message = get_random_processing_message(org_config, language)
+            if processing_message and tts_streamer:
+                logger.info(f"Generating TTS for processing message: '{processing_message}' (language: {language})")
+                # Generate TTS for the processing message immediately
+                tts_streamer.append_text(processing_message)
+                tts_streamer.flush()  # Ensure it gets processed immediately
+        except Exception as e:
+            logger.warning(f"Failed to generate processing TTS: {str(e)}")
         
         # Step 1: Perform Gemini validation using the refactored validator
         validator_request = GeminiValidationRequest(
@@ -232,6 +304,10 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         # Send answer generation start status
         sse_handler.send('status', message='Starting answer generation with OpenAI')
 
+
+        # Play wait1 audio after validation completion
+        sse_handler.playAudio('wait1.mp3')
+        
         # Step 3: Generate answer using OpenAI GPT with streaming
         generation_request = OpenAIGenerationRequest(
             org_config_id=org_id,

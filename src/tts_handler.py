@@ -32,14 +32,14 @@ class TTSHandler:
     Centralizes TTS generation and provides caching capabilities.
     """
     
-    def __init__(self, subscription_key: str, region: str = "southeastasia", silence_threshold: float = 0.01, enable_trimming: bool = True):
+    def __init__(self, subscription_key: str, region: str = "southeastasia", silence_threshold: float = 0.05, enable_trimming: bool = True):
         """
         Initialize TTS handler with Azure configuration
         
         Args:
             subscription_key: Azure subscription key
             region: Azure region (default: southeastasia)
-            silence_threshold: Energy threshold for silence detection (0.01 = 1% of max energy)
+            silence_threshold: Energy threshold for silence detection (0.05 = 5% of max energy)
             enable_trimming: Whether to enable audio trimming (can be disabled for speed)
         """
         self.subscription_key = subscription_key
