@@ -269,7 +269,7 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
           if (audioData.audio_data && !playedAudioIds.current.has(message.id)) {
             playedAudioIds.current.add(message.id);
             audioQueue.current.push({ id: message.id, audioData });
-            console.log('Added audio to queue:', audioData.text, 'Queue length:', audioQueue.current.length);
+            console.log('Added audio to queue:', audioData.text, 'Queue length:', audioQueue.current.length, " isPlaying:", isPlayingAudio.current);
             // Trigger queue processing
             processAudioQueue();
           }

@@ -101,6 +101,7 @@ class TTSModel(BaseModel):
     language: str
     name: str
     pitch: Optional[str] = None
+    rate: Optional[str] = None
     phonemeUrl: Optional[str] = None
 
 class AzureTTSConfig(BaseModel):
