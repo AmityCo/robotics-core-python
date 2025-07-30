@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
         
+      - name: Make startup script executable
+        run: chmod +x startup.sh
+        
       # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
 
       - name: Upload artifact for deployment jobs
@@ -58,5 +61,4 @@ jobs:
         with:
           app-name: 'robotics-core-python-staging'
           slot-name: 'Production'
-          startup-command: 'python -m uvicorn main:app --host 0.0.0.0 --port $PORT'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_B4A9ADF1986A41A2861128E37D657871 }}
