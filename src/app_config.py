@@ -36,6 +36,12 @@ class AppConfig:
     DYNAMODB_TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME", "RoboticConfigureTable-prod")
     DYNAMODB_REGION = os.getenv("DYNAMODB_REGION", "ap-southeast-1")
     
+    # Azure Storage settings for TTS caching
+    AZURE_STORAGE_ACCOUNT_NAME = os.getenv("AZURE_STORAGE_ACCOUNT_NAME", "")
+    AZURE_STORAGE_ACCOUNT_KEY = os.getenv("AZURE_STORAGE_ACCOUNT_KEY", "")
+    AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
+    TTS_CACHE_CONTAINER_NAME = os.getenv("TTS_CACHE_CONTAINER_NAME", "tts-cache")
+    
     # KM API settings
     ASAP_KM_TOKEN = os.getenv("ASAP_KM_TOKEN", "")
     

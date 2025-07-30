@@ -275,6 +275,26 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
           }
           break;
         
+        case 'audio':
+          const waitAudioData = message.data;
+          content = `🔊 Wait Audio (${(waitAudioData.audio_size / 1024).toFixed(1)}KB, ${waitAudioData.audio_format})`;
+          console.log('Received wait audio:', {
+            format: waitAudioData.audio_format,
+            audioDataLength: waitAudioData.audio_data?.length,
+            audioSize: waitAudioData.audio_size
+          });
+          // Add to audio queue only if not already played
+          if (waitAudioData.audio_data && !playedAudioIds.current.has(message.id)) {
+            playedAudioIds.current.add(message.id);
+            // Add text property for queue processing compatibility
+            const audioDataWithText = { ...waitAudioData, text: 'Wait audio' };
+            audioQueue.current.push({ id: message.id, audioData: audioDataWithText });
+            console.log('Added wait audio to queue, Queue length:', audioQueue.current.length, " isPlaying:", isPlayingAudio.current);
+            // Trigger queue processing
+            processAudioQueue();
+          }
+          break;
+        
         default:
           content = JSON.stringify(message.data, null, 2);
       }
@@ -301,6 +321,8 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
         return 'bg-gray-50 border-gray-200';
       case 'tts_audio':
         return 'bg-indigo-50 border-indigo-200';
+      case 'audio':
+        return 'bg-orange-50 border-orange-200';
       case 'complete':
         return 'bg-green-100 border-green-300';
       default:

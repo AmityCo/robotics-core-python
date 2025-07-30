@@ -8,6 +8,7 @@ import threading
 import base64
 import re
 import asyncio
+import os
 from typing import Generator, Dict, List
 from requests import RequestException
 
@@ -139,7 +140,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                     'language': language,
                     'audio_size': len(audio_data),
                     'audio_data': base64.b64encode(audio_data).decode('utf-8'),
-                    'audio_format': 'audio-16khz-128kbitrate-mono-mp3'
+                    'audio_format': 'raw-16khz-16bit-mono-pcm'
                 }
                 sse_handler.send('tts_audio', data=tts_audio_data)
                 logger.info(f"TTS audio sent for text: '{text[:50]}...' (language: {language}, size: {len(audio_data)} bytes)")
@@ -157,6 +158,9 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         # Send validation start status
         sse_handler.send('status', message='Starting validation with Gemini')
         logger.info(f"Starting validation with Gemini using model: {validator_model}")
+        
+        # Emit wait audio for validation stage
+        sse_handler.playAudio('wait1.mp3')
         
         # Step 1: Perform Gemini validation using the refactored validator
         validator_request = GeminiValidationRequest(

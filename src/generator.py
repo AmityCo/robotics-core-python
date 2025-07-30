@@ -94,7 +94,7 @@ def stream_answer_with_openai_with_config(
     # Use config values with optional overrides from request
     model = "gpt-4.1-mini" if not request.model else request.model
     api_key = request.openai_api_key or openai_config.apiKey
-    temperature = request.temperature if request.temperature is not None else 0.7
+    temperature = request.temperature if request.temperature is not None else 0.01
     max_tokens = request.max_tokens or 2048
     
     logger.info(f"Using OpenAI model: {model}")
@@ -149,7 +149,7 @@ def stream_answer_with_openai_with_config(
     
     # Replace {context} and {current_time} placeholders in system prompt
     current_time = datetime.now().isoformat()
-    system_prompt = system_prompt.replace("{context}", km_context).replace("{current_time}", current_time)
+    # system_prompt = system_prompt.replace("{context}", km_context).replace("{current_time}", current_time)
     # Replace {question} placeholder in user prompt
     user_prompt = user_prompt.replace("{question}", request.question)
 
@@ -158,6 +158,10 @@ def stream_answer_with_openai_with_config(
         {
             "role": "system",
             "content": system_prompt
+        },
+        {
+            "role": "system",
+            "content": "Context: "+km_context+" \nCurrent Time: "+current_time
         }
     ]
     
@@ -188,7 +192,8 @@ def stream_answer_with_openai_with_config(
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "stream": True  # Enable streaming
+        "stream": True,  # Enable streaming
+        "stream_options": {"include_usage": True}
     }
 
     logger.info(f"Calling OpenAI API with streaming for model: {model}")
@@ -213,6 +218,7 @@ def stream_answer_with_openai_with_config(
     for line in response.iter_lines():
         if line:
             line = line.decode('utf-8')
+            logger.debug(f"OpenAI response line: {line}")
             if line.startswith('data: '):
                 data_str = line[6:]  # Remove 'data: ' prefix
                 if data_str.strip() == '[DONE]':

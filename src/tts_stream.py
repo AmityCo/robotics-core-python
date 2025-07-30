@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from src.org_config import OrgConfigData, TTSModel
 from src.requests_handler import get as cached_get
+from src.tts_handler import TTSHandler
 
 logger = logging.getLogger(__name__)
 
@@ -113,14 +114,6 @@ class SSMLFormatter:
         # Remove bracketed words if configured
         if self.remove_bracketed_words:
             transformed = re.sub(r'\(.*?\)', '', transformed)
-        
-        # Replace illegal characters
-        transformed = (transformed
-                      .replace("&", " And ")
-                      .replace("<", "")
-                      .replace(">", "")
-                      .replace('"', "")
-                      .replace("'", ""))
         
         return transformed
     
@@ -299,7 +292,8 @@ class TTSChunk:
 
 class TTSStreamer:
     """
-    Main TTS streaming class that manages text chunks and triggers TTS generation
+    Main TTS streaming class that manages text chunks and triggers TTS generation.
+    Processes text when <break/> keyword is detected for immediate speech generation.
     """
     
     def __init__(self, org_config: OrgConfigData, language: str, 
@@ -312,8 +306,12 @@ class TTSStreamer:
             org_config: Organization configuration containing TTS settings
             language: Language code for all text chunks
             audio_callback: Callback for when audio chunks are ready (text, audio_data)
-            min_words: Minimum words before triggering TTS (default: 4)
+            min_words: Minimum words before triggering TTS (kept for backward compatibility)
             remove_bracketed_words: Whether to remove text in brackets
+            
+        Note:
+            Text processing is now triggered by <break/> keyword rather than word count.
+            The min_words parameter is kept for backward compatibility but not actively used.
         """
         self.language = language
         self.audio_callback = audio_callback
@@ -324,9 +322,10 @@ class TTSStreamer:
             raise ValueError("Azure TTS configuration not found in organization config")
         
         self.azure_config = org_config.tts.azure
-        self.subscription_key = self.azure_config.subscriptionKey
-        self.region = "southeastasia"
-        self.base_url = f"https://{self.region}.tts.speech.microsoft.com"
+        region = "southeastasia"
+        
+        # Initialize TTS handler
+        self.tts_handler = TTSHandler(self.azure_config.subscriptionKey, region)
         
         # Get model for the specified language
         self.model = self._get_model_for_language(language)
@@ -340,7 +339,7 @@ class TTSStreamer:
         self.current_chunk = TTSChunk("")
         self.chunk_order = 0  # Track order for SSML generation
         
-        logger.info(f"Initialized TTS streamer for language: {language}, model: {self.model.name}, min_words: {min_words}")
+        logger.info(f"Initialized TTS streamer for language: {language}, model: {self.model.name}, break-triggered processing enabled")
     
     async def initialize(self) -> None:
         """Initialize the TTS streamer by loading phonemes"""
@@ -371,7 +370,7 @@ class TTSStreamer:
     
     def append_text(self, text: str) -> None:
         """
-        Append text to current chunk. If chunk reaches minimum word count,
+        Append text to current chunk. If chunk contains <break/> keyword,
         process it and start a new chunk.
         
         Args:
@@ -382,28 +381,76 @@ class TTSStreamer:
         # Append text to current chunk
         self.current_chunk.append_text(text)
         
-        # Check if we should process the current chunk
-        if self.current_chunk.has_minimum_words(self.min_words):
-            self._process_current_chunk()
+        # Check if we should process the current chunk by looking for <break/> keyword
+        if "<break/>" in self.current_chunk.text:
+            self._process_current_chunk_with_break()
     
     def flush(self) -> None:
         """
         Process any remaining text in the current chunk
         """
         if not self.current_chunk.is_empty():
-            logger.info(f"Flushing remaining text: '{self.current_chunk.text}'")
-            # During flush, we want to process ALL text, including the last word
-            text_to_process = self.current_chunk.text.strip()
+            # First check if there are any <break/> markers to process
+            if "<break/>" in self.current_chunk.text:
+                self._process_current_chunk_with_break()
             
-            # Generate speech for remaining text
-            audio_data = self._generate_speech(text_to_process)
+            # Process any remaining text after break processing
+            if not self.current_chunk.is_empty():
+                logger.info(f"Flushing remaining text: '{self.current_chunk.text}'")
+                # During flush, we want to process ALL text, removing any <break/> markers
+                text_to_process = self.current_chunk.text.replace("<break/>", "").strip()
+                
+                if text_to_process:  # Only process if there's actual content
+                    # Generate speech for remaining text
+                    audio_data = self._generate_speech(text_to_process)
+                    
+                    # Trigger callback if audio was generated successfully
+                    if audio_data and self.audio_callback:
+                        self.audio_callback(text_to_process, audio_data)
+                
+                # Clear the chunk
+                self.current_chunk = TTSChunk("")
+    
+    def _process_current_chunk_with_break(self) -> None:
+        """
+        Process the current chunk when <break/> keyword is detected.
+        Ships off the whole buffer up to and including the <break/> marker.
+        """
+        if self.current_chunk.is_empty():
+            return
+        
+        text_to_process = self.current_chunk.text.strip()
+        
+        # Find the position of <break/> and split the text
+        break_index = text_to_process.find("<break/>")
+        if break_index != -1:
+            # Include everything up to and including <break/>
+            text_with_break = text_to_process[:break_index + len("<break/>")]
+            remaining_text = text_to_process[break_index + len("<break/>"):]
             
-            # Trigger callback if audio was generated successfully
-            if audio_data and self.audio_callback:
-                self.audio_callback(text_to_process, audio_data)
+            # Remove the <break/> tag from the text to be processed (it's just a marker)
+            text_for_speech = text_with_break.replace("<break/>", "").strip()
             
-            # Clear the chunk
-            self.current_chunk = TTSChunk("")
+            if text_for_speech:  # Only process if there's actual content
+                logger.info(f"Processing chunk with break: '{text_for_speech[:100]}...'")
+                
+                # Generate speech for this chunk
+                audio_data = self._generate_speech(text_for_speech)
+                
+                # Trigger callback if audio was generated successfully
+                if audio_data and self.audio_callback:
+                    self.audio_callback(text_for_speech, audio_data)
+            
+            # Create new chunk with any remaining text after <break/>
+            self.current_chunk = TTSChunk(remaining_text.strip())
+            self.chunk_order += 1
+            
+            # Check if the remaining text also contains <break/> and process recursively
+            if "<break/>" in remaining_text:
+                self._process_current_chunk_with_break()
+        else:
+            # This shouldn't happen since we checked for <break/> before calling this method
+            logger.warning("_process_current_chunk_with_break called but no <break/> found")
     
     def _process_current_chunk(self) -> None:
         """
@@ -440,7 +487,7 @@ class TTSStreamer:
 
     def _generate_speech(self, text: str) -> Optional[bytes]:
         """
-        Generate speech using Azure TTS API
+        Generate speech using Azure TTS API via TTSHandler
         
         Args:
             text: Text to convert to speech
@@ -449,29 +496,8 @@ class TTSStreamer:
             Audio data as bytes, or None if failed
         """
         try:
-            # Create SSML using the formatter
-            ssml = self.ssml_formatter.create_ssml(text, self.model, self.chunk_order)
-            
-            # Make TTS request
-            headers = {
-                'Ocp-Apim-Subscription-Key': self.subscription_key,
-                'Content-Type': 'application/ssml+xml',
-                'X-Microsoft-OutputFormat': 'riff-24khz-16bit-mono-pcm',  # Updated to match Kotlin
-                'User-Agent': 'robotics-core-python'
-            }
-            
-            url = f"{self.base_url}/cognitiveservices/v1"
-            
-            logger.debug(f"Making TTS request to {url}")
-            logger.debug(f"SSML content: {ssml}")
-            response = requests.post(url, headers=headers, data=ssml.encode('utf-8'), timeout=30)
-            
-            if response.status_code == 200:
-                logger.info(f"TTS generation successful, audio size: {len(response.content)} bytes")
-                return response.content
-            else:
-                logger.error(f"TTS API error: {response.status_code} - {response.text or response.reason}")
-                return None
+            # Use TTS handler with SSMLFormatter directly
+            return self.tts_handler.generate_speech(text, self.ssml_formatter, self.model, self.chunk_order)
                 
         except Exception as e:
             logger.error(f"Error generating speech: {str(e)}")
@@ -493,26 +519,9 @@ class TTSStreamer:
     
     def get_available_voices(self) -> Optional[List[Dict[str, Any]]]:
         """
-        Get list of available voices from Azure TTS API
+        Get list of available voices from Azure TTS API via TTSHandler
         
         Returns:
             List of voice information or None if failed
         """
-        try:
-            headers = {
-                'Ocp-Apim-Subscription-Key': self.subscription_key
-            }
-            
-            url = f"https://southeastasia.tts.speech.microsoft.com/cognitiveservices/voices/list"
-            
-            response = requests.get(url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logger.error(f"Failed to get voices list: {response.status_code} - {response.text}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error getting voices list: {str(e)}")
-            return None
+        return self.tts_handler.get_available_voices()

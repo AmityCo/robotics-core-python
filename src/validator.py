@@ -66,11 +66,9 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
         "role": "user",
         "parts": user_parts
     })
-    temp_system_prompt = """
-    """
     gemini_request_data = {
         "contents": contents,
-        "systemInstruction": {"parts": [{"text": temp_system_prompt}]},
+        "systemInstruction": {"parts": [{"text": request.validation_system_prompt}]},
         "generationConfig": {
             **request.generation_config,
             "responseMimeType": "application/json",

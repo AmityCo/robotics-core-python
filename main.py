@@ -11,10 +11,15 @@ from src.answer_flow_sse import execute_answer_flow_sse, get_validation_prompts_
 
 # Configure logging with timestamp format
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+# Silence Azure Core logging
+logging.getLogger('azure.core.pipeline.policies.http_logging_policy').setLevel(logging.WARNING)
+logging.getLogger('azure.storage').setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="ARC2 Server", version="1.0.0")
