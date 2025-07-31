@@ -7,6 +7,7 @@ import asyncio
 from typing import Optional
 from azure.storage.blob import BlobServiceClient, BlobClient
 from azure.core.exceptions import AzureError, ResourceNotFoundError
+from .telemetry import telemetry_span, add_span_attributes, record_exception
 
 # Silence Azure Core logging
 logging.getLogger('azure.core.pipeline.policies.http_logging_policy').setLevel(logging.WARNING)
@@ -72,34 +73,45 @@ class AzureStorageHandler:
         Returns:
             Audio data as bytes, or None if not found
         """
-        if not self.blob_service_client:
-            logger.warning("Azure Storage not configured, skipping cache lookup")
-            return None
-            
-        try:
-            blob_client = self.blob_service_client.get_blob_client(
-                container=self.container_name,
-                blob=blob_name
-            )
-            
-            # Check if blob exists
-            if blob_client.exists():
-                audio_data = blob_client.download_blob().readall()
-                logger.info(f"Retrieved cached audio: {blob_name}, size: {len(audio_data)} bytes")
-                return audio_data
-            else:
-                logger.debug(f"Cached audio not found: {blob_name}")
+        with telemetry_span("azure_storage.get_blob", {
+            "azure.storage.operation": "get_blob",
+            "azure.storage.container": self.container_name,
+            "azure.storage.blob": blob_name
+        }) as span:
+            if not self.blob_service_client:
+                logger.warning("Azure Storage not configured, skipping cache lookup")
+                add_span_attributes(span, configured=False)
                 return None
                 
-        except ResourceNotFoundError:
-            logger.debug(f"Cached audio not found: {blob_name}")
-            return None
-        except AzureError as e:
-            logger.error(f"Azure Storage error retrieving {blob_name}: {str(e)}")
-            return None
-        except Exception as e:
-            logger.error(f"Unexpected error retrieving cached audio {blob_name}: {str(e)}")
-            return None
+            try:
+                blob_client = self.blob_service_client.get_blob_client(
+                    container=self.container_name,
+                    blob=blob_name
+                )
+                
+                # Check if blob exists
+                if blob_client.exists():
+                    audio_data = blob_client.download_blob().readall()
+                    logger.info(f"Retrieved cached audio: {blob_name}, size: {len(audio_data)} bytes")
+                    add_span_attributes(span, found=True, size_bytes=len(audio_data))
+                    return audio_data
+                else:
+                    logger.debug(f"Cached audio not found: {blob_name}")
+                    add_span_attributes(span, found=False)
+                    return None
+                    
+            except ResourceNotFoundError:
+                logger.debug(f"Cached audio not found: {blob_name}")
+                add_span_attributes(span, found=False)
+                return None
+            except AzureError as e:
+                logger.error(f"Azure Storage error retrieving {blob_name}: {str(e)}")
+                record_exception(span, e)
+                return None
+            except Exception as e:
+                logger.error(f"Unexpected error retrieving cached audio {blob_name}: {str(e)}")
+                record_exception(span, e)
+                return None
     
     def save_audio_async(self, blob_name: str, audio_data: bytes):
         """
@@ -124,25 +136,34 @@ class AzureStorageHandler:
             blob_name: The blob name
             audio_data: Audio data as bytes
         """
-        try:
-            blob_client = self.blob_service_client.get_blob_client(
-                container=self.container_name,
-                blob=blob_name
-            )
-            
-            # Upload with MP3 content type
-            blob_client.upload_blob(
-                audio_data,
-                content_type="audio/mpeg",
-                overwrite=True
-            )
-            
-            logger.info(f"Successfully cached audio: {blob_name}, size: {len(audio_data)} bytes")
-            
-        except AzureError as e:
-            logger.error(f"Azure Storage error saving {blob_name}: {str(e)}")
-        except Exception as e:
-            logger.error(f"Unexpected error saving audio {blob_name}: {str(e)}")
+        with telemetry_span("azure_storage.upload_blob", {
+            "azure.storage.operation": "upload_blob",
+            "azure.storage.container": self.container_name,
+            "azure.storage.blob": blob_name,
+            "size_bytes": len(audio_data)
+        }) as span:
+            try:
+                blob_client = self.blob_service_client.get_blob_client(
+                    container=self.container_name,
+                    blob=blob_name
+                )
+                
+                # Upload with MP3 content type
+                blob_client.upload_blob(
+                    audio_data,
+                    content_type="audio/mpeg",
+                    overwrite=True
+                )
+                
+                logger.info(f"Successfully cached audio: {blob_name}, size: {len(audio_data)} bytes")
+                add_span_attributes(span, success=True)
+                
+            except AzureError as e:
+                logger.error(f"Azure Storage error saving {blob_name}: {str(e)}")
+                record_exception(span, e)
+            except Exception as e:
+                logger.error(f"Unexpected error saving audio {blob_name}: {str(e)}")
+                record_exception(span, e)
     
     def delete_cached_audio(self, blob_name: str) -> bool:
         """

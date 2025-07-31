@@ -45,6 +45,9 @@ class AppConfig:
     # KM API settings
     ASAP_KM_TOKEN = os.getenv("ASAP_KM_TOKEN", "")
     
+    # Azure Application Insights settings
+    APPLICATIONINSIGHTS_CONNECTION_STRING = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
+    
     @classmethod
     def get_cors_settings(cls) -> Dict[str, Any]:
         """Get CORS configuration"""

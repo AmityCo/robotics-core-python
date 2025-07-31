@@ -8,6 +8,7 @@ import logging
 from src.app_config import config
 from src.models import ChatMessage
 from src.answer_flow_sse import execute_answer_flow_sse, get_validation_prompts_from_org_config
+from src.telemetry import configure_telemetry, instrument_fastapi
 
 # Configure logging with timestamp format
 logging.basicConfig(
@@ -22,7 +23,13 @@ logging.getLogger('azure.storage').setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+# Initialize telemetry before creating the FastAPI app
+configure_telemetry()
+
 app = FastAPI(title="ARC2 Server", version="1.0.0")
+
+# Instrument FastAPI for telemetry
+instrument_fastapi(app)
 
 # Add CORS middleware to allow requests from arc2_live
 app.add_middleware(
