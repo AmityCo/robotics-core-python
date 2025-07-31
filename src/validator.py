@@ -6,7 +6,7 @@ Handles all Gemini API validation operations
 import json
 import logging
 import requests
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 from src.app_config import config
 from src.models import ChatMessage
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class GeminiValidationRequest(BaseModel):
     transcript: str
     language: str
-    base64_audio: str
+    base64_audio: Optional[str] = None  # Made optional to support text-only validation
     validation_system_prompt: str
     validation_user_prompt: str
     model: str
@@ -51,16 +51,22 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
                 "parts": [{"text": message.content}]
             })
     
-    # Add current user message with audio and validation prompt
-    user_parts = [
-        {
+    # Add current user message with validation prompt and optional audio
+    user_parts = []
+    
+    # Add audio if provided
+    if request.base64_audio:
+        user_parts.append({
             "inlineData": {
                 "mimeType": "audio/wav",
                 "data": request.base64_audio,
             }
-        },
-        {"text": request.validation_user_prompt},
-    ]
+        })
+    
+    # Add the validation prompt with transcript included
+    user_parts.append({"text": request.validation_user_prompt
+                       .replace("{transcript}", request.transcript)}
+                      .replace("{language}", request.language))
     
     contents.append({
         "role": "user",

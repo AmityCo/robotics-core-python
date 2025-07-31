@@ -10,7 +10,7 @@ import re
 import asyncio
 import os
 import random
-from typing import Generator, Dict, List
+from typing import Generator, Dict, List, Optional
 from requests import RequestException
 
 from src.sse_handler import SSEHandler
@@ -173,10 +173,12 @@ async def get_validation_prompts_from_org_config(org_config, language: str):
     return validation_system_prompt, validation_user_prompt, validator_model
 
 
-async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str, config_id: str, chat_history: List[ChatMessage]):
+async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None):
     """
     Background worker function that executes the answer pipeline.
     Uses SSEHandler to send messages back to the main thread.
+    Supports both audio-based and text-only validation.
+    If keywords are provided, validation step is skipped.
     """
     try:
         # Send initial status
@@ -218,66 +220,89 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             logger.warning(f"Failed to initialize TTS streamer: {str(e)}")
             tts_streamer = None
         
-        # Get validation prompts from org config
-        validation_system_prompt, validation_user_prompt, validator_model = await get_validation_prompts_from_org_config(org_config, language)
-        
-        # Send validation start status
-        sse_handler.send('status', message='Starting validation with Gemini')
-        logger.info(f"Starting validation with Gemini using model: {validator_model}")
-        
-        # Generate and play processing TTS message at the start of validation
-        try:
-            processing_message = get_random_processing_message(org_config, language)
-            if processing_message and tts_streamer:
-                logger.info(f"Generating TTS for processing message: '{processing_message}' (language: {language})")
-                # Generate TTS for the processing message immediately
-                tts_streamer.append_text(processing_message)
-                tts_streamer.flush()  # Ensure it gets processed immediately
-        except Exception as e:
-            logger.warning(f"Failed to generate processing TTS: {str(e)}")
-        
-        # Step 1: Perform Gemini validation using the refactored validator
-        validator_request = GeminiValidationRequest(
-            transcript=transcript,
-            language=language,
-            base64_audio=base64_audio,
-            validation_system_prompt=validation_system_prompt,
-            validation_user_prompt=validation_user_prompt,
-            model=validator_model,
-            generation_config={
-                "temperature": 0.01,
-                "topP": 0.95,
-                "topK": 64,
-                "maxOutputTokens": 8192,
-                "responseMimeType": "application/json"
-            },
-            gemini_api_key=org_config.gemini.key,
-            chat_history=chat_history
-        )
-        
-        validation_result = validate_with_gemini(validator_request)
-        logger.info(f"Validation completed: {validation_result.correction}")
+        # Check if keywords are provided directly (skip validation)
+        if keywords is not None:
+            # Skip validation - use provided keywords and transcript directly
+            logger.info(f"Skipping validation - using provided keywords: {keywords}")
+            sse_handler.send('status', message='Skipping validation - using provided keywords')
+            
+            # Create a mock validation result using the transcript and provided keywords
+            validation_data = {
+                'correction': transcript,  # Use transcript as-is for correction
+                'keywords': keywords or []  # Use provided keywords (even if empty)
+            }
+            
+            # Set up variables for KM search
+            correction = transcript
+            validation_keywords = keywords or []
+            
+        else:
+            # Perform normal validation process
+            # Get validation prompts from org config
+            validation_system_prompt, validation_user_prompt, validator_model = await get_validation_prompts_from_org_config(org_config, language)
+            
+            # Send validation start status
+            validation_type = "text-based" if base64_audio is None else "audio-based"
+            sse_handler.send('status', message=f'Starting {validation_type} validation with Gemini')
+            logger.info(f"Starting {validation_type} validation with Gemini using model: {validator_model}")
+            
+            # Generate and play processing TTS message at the start of validation
+            try:
+                processing_message = get_random_processing_message(org_config, language)
+                if processing_message and tts_streamer:
+                    logger.info(f"Generating TTS for processing message: '{processing_message}' (language: {language})")
+                    # Generate TTS for the processing message immediately
+                    tts_streamer.append_text(processing_message)
+                    tts_streamer.flush()  # Ensure it gets processed immediately
+            except Exception as e:
+                logger.warning(f"Failed to generate processing TTS: {str(e)}")
+            
+            # Step 1: Perform Gemini validation using the refactored validator
+            validator_request = GeminiValidationRequest(
+                transcript=transcript,
+                language=language,
+                base64_audio=base64_audio,  # This can now be None for text-only validation
+                validation_system_prompt=validation_system_prompt,
+                validation_user_prompt=validation_user_prompt,
+                model=validator_model,
+                generation_config={
+                    "temperature": 0.01,
+                    "topP": 0.95,
+                    "topK": 64,
+                    "maxOutputTokens": 8192,
+                    "responseMimeType": "application/json"
+                },
+                gemini_api_key=org_config.gemini.key,
+                chat_history=chat_history
+            )
+            
+            validation_result = validate_with_gemini(validator_request)
+            logger.info(f"Validation completed: {validation_result.correction}")
 
-        # Send validation result
-        validation_data = {
-            'correction': validation_result.correction,
-            'keywords': validation_result.keywords
-        }
-        sse_handler.send('validation_result', data=validation_data)
+            # Send validation result
+            validation_data = {
+                'correction': validation_result.correction,
+                'keywords': validation_result.keywords
+            }
+            sse_handler.send('validation_result', data=validation_data)
+            
+            # Set up variables for KM search
+            correction = validation_result.correction
+            validation_keywords = validation_result.keywords
 
         # Send KM search start status
         sse_handler.send('status', message='Starting knowledge management search')
 
-        # Step 2: Perform KM batch search using the validation result
+        # Step 2: Perform KM batch search using the validation/provided data
         search_queries: List[str] = []
         
         # Add correction (main query)
-        if validation_result.correction:
-            search_queries.append(validation_result.correction)
+        if correction:
+            search_queries.append(correction)
         
         # add keywords to search queries
-        if validation_result.keywords:
-            for keyword in validation_result.keywords:
+        if validation_keywords:
+            for keyword in validation_keywords:
                 if keyword.strip():
                     search_queries.append(keyword.strip())
         
@@ -331,7 +356,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         generation_request = OpenAIGenerationRequest(
             org_id=org_id,
             config_id=config_id,
-            question=validation_result.correction,
+            question=correction,  # Use the correction from validation or transcript
             chat_history=chat_history
         )
         
@@ -539,14 +564,14 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             sse_handler.mark_component_complete('tts_processing')
 
 
-def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str, config_id: str, chat_history: List[ChatMessage]):
+def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None):
     """
     Synchronous wrapper for the async background function
     """
-    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history))
+    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords))
 
 
-def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, org_id: str, config_id: str, chat_history: List[ChatMessage] = None) -> Generator[str, None, None]:
+def execute_answer_flow_sse(transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage] = None, keywords: Optional[List[str]] = None) -> Generator[str, None, None]:
     """
     Execute the complete answer pipeline with Server-Sent Events.
     Validates with Gemini, searches KM, then generates answer with OpenAI GPT.
@@ -558,10 +583,11 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, o
     Args:
         transcript: The user's transcript
         language: The language of the transcript
-        base64_audio: Base64 encoded audio data
+        base64_audio: Base64 encoded audio data (optional, for text-only requests can be None)
         org_id: Organization ID (partition key)
         config_id: Configuration ID within the organization
         chat_history: Previous conversation history (optional)
+        keywords: If provided, skip validation and use these keywords directly (optional)
         
     Yields:
         SSE formatted strings containing progress updates and results
@@ -575,7 +601,7 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, o
     # Start the background thread to execute the pipeline
     pipeline_thread = threading.Thread(
         target=_execute_answer_pipeline_sync_wrapper,
-        args=(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history),
+        args=(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords),
         daemon=True
     )
     pipeline_thread.start()

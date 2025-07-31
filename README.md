@@ -6,6 +6,8 @@ AI-powered answer generation system with real-time progress updates via Server-S
 
 - **Multi-stage Pipeline**: Validation → Knowledge Search → Answer Generation
 - **Real-time Updates**: SSE support for live progress tracking
+- **Flexible Input**: Supports audio-based, text-only, and direct keyword input
+- **Skip Validation**: Optional keywords parameter to bypass validation step
 - **Organization Configuration**: Dynamic config from DynamoDB
 - **Multiple AI Models**: Gemini for validation, OpenAI for generation
 - **Knowledge Management**: Integration with Amity Solutions KM API
@@ -43,6 +45,81 @@ AI-powered answer generation system with real-time progress updates via Server-S
 - **POST** `/api/v1/gemini/validate` - Gemini validation only
 - **POST** `/api/v1/km/search` - Knowledge management search
 - **POST** `/api/v1/km/batch-search` - Batch knowledge management search
+
+## Enhanced API Features ✨ NEW
+
+### Flexible Input Modes
+
+The SSE API now supports three input modes:
+
+1. **Audio + Text (Default)**: Full validation with audio and transcript
+2. **Text-only**: Validation with transcript only (no audio required)
+3. **Direct Keywords**: Skip validation entirely and use provided keywords
+
+### Request Parameters
+
+```json
+{
+  "transcript": "string",              // Required: User's transcript
+  "language": "string",               // Required: Language code (e.g., "en-US")
+  "base64_audio": "string | null",    // Optional: Base64 encoded audio
+  "org_id": "string",                 // Required: Organization ID
+  "config_id": "string",              // Required: Configuration ID
+  "chat_history": [],                 // Optional: Previous conversation
+  "keywords": ["string"] | null       // Optional: Skip validation if provided
+}
+```
+
+### Usage Examples
+
+#### 1. Audio-based Processing (Traditional)
+```json
+{
+  "transcript": "What is the weather like today?",
+  "language": "en-US",
+  "base64_audio": "UklGRnoGAABXQVZFZm10IBAAAAABAAEA...",
+  "org_id": "my-org",
+  "config_id": "my-config"
+}
+```
+
+#### 2. Text-only Processing
+```json
+{
+  "transcript": "What is the weather like today?", 
+  "language": "en-US",
+  "org_id": "my-org",
+  "config_id": "my-config"
+}
+```
+
+#### 3. Skip Validation with Keywords
+```json
+{
+  "transcript": "What is the weather like today?",
+  "language": "en-US", 
+  "org_id": "my-org",
+  "config_id": "my-config",
+  "keywords": ["weather", "forecast", "today"]
+}
+```
+
+#### 4. Skip Validation with Empty Keywords
+```json
+{
+  "transcript": "What is the weather like today?",
+  "language": "en-US",
+  "org_id": "my-org", 
+  "config_id": "my-config",
+  "keywords": []
+}
+```
+
+### Performance Benefits
+
+- **Text-only**: ~100-200ms faster (no audio processing)
+- **Skip validation**: ~200-500ms faster (no Gemini API call)
+- **Reduced costs**: Fewer external API calls when validation is skipped
 
 ## Documentation
 
@@ -104,13 +181,18 @@ The `/api/v1/answer-sse` endpoint provides real-time progress updates via Server
 import requests
 import json
 
-def handle_sse_response(transcript, language, org_id, base64_audio=""):
+def handle_sse_response(transcript, language, org_id, base64_audio=None, keywords=None):
     payload = {
         "transcript": transcript,
         "language": language,
-        "base64_audio": base64_audio,
         "org_id": org_id
     }
+    
+    # Add optional fields
+    if base64_audio:
+        payload["base64_audio"] = base64_audio
+    if keywords is not None:  # Allow empty list
+        payload["keywords"] = keywords
     
     response = requests.post(
         "http://localhost:8000/api/v1/answer-sse",
@@ -130,6 +212,7 @@ def handle_sse_response(transcript, language, org_id, base64_audio=""):
                     print(f"Status: {data.get('message')}")
                 elif event_type == 'validation_result':
                     print(f"Validation: {data['data']['correction']}")
+                    print(f"Keywords: {data['data']['keywords']}")
                 elif event_type == 'km_result':
                     print(f"KM Search: {len(data['data']['data'])} results")
                 elif event_type == 'answer_chunk':
@@ -143,6 +226,11 @@ def handle_sse_response(transcript, language, org_id, base64_audio=""):
                     
             except json.JSONDecodeError:
                 continue
+
+# Usage examples:
+# handle_sse_response("Hello", "en-US", "org1")  # Text-only
+# handle_sse_response("Hello", "en-US", "org1", keywords=["greeting"])  # Skip validation
+# handle_sse_response("Hello", "en-US", "org1", "audio_data", keywords=[])  # Skip with empty keywords
 ```
 
 #### JavaScript/TypeScript Client Example
@@ -155,12 +243,15 @@ interface SSEEvent {
   message?: string;
 }
 
-async function handleSSE(requestData: {
+interface RequestData {
   transcript: string;
   language: string;
   org_id: string;
-  base64_audio: string;
-}) {
+  base64_audio?: string;  // Optional
+  keywords?: string[];    // Optional - skip validation if provided
+}
+
+async function handleSSE(requestData: RequestData) {
   const response = await fetch('http://localhost:8000/api/v1/answer-sse', {
     method: 'POST',
     headers: {
@@ -191,9 +282,14 @@ async function handleSSE(requestData: {
             switch (event.type) {
               case 'status':
                 console.log(`Status: ${event.message}`);
+                // Check if validation was skipped
+                if (event.message?.includes('skipping validation')) {
+                  console.log('✅ Validation skipped due to provided keywords');
+                }
                 break;
               case 'validation_result':
                 console.log('Validation completed:', event.data);
+                console.log('Keywords:', event.data.keywords);
                 break;
               case 'km_result':
                 console.log('KM search completed:', event.data);
@@ -228,6 +324,11 @@ async function handleSSE(requestData: {
     reader.releaseLock();
   }
 }
+
+// Usage examples:
+// handleSSE({ transcript: "Hello", language: "en-US", org_id: "org1" });  // Text-only
+// handleSSE({ transcript: "Hello", language: "en-US", org_id: "org1", keywords: ["greeting"] });  // Skip validation
+// handleSSE({ transcript: "Hello", language: "en-US", org_id: "org1", keywords: [] });  // Skip with empty keywords
 ```
 
 #### Kotlin Client Example

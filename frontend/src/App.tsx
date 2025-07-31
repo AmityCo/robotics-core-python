@@ -4,6 +4,8 @@ import TranscriptInput from './components/TranscriptInput';
 import OrgIdInput from './components/OrgIdInput';
 import ConfigIdInput from './components/ConfigIdInput';
 import ChatHistoryInput from './components/ChatHistoryInput';
+import KeywordsInput from './components/KeywordsInput';
+import ProcessingModeToggle from './components/ProcessingModeToggle';
 import HistoryPanel from './components/HistoryPanel';
 import SSEOutput from './components/SSEOutput';
 import ApiUrlInput from './components/ApiUrlInput';
@@ -31,6 +33,17 @@ const App: React.FC = () => {
     } catch {
       return [];
     }
+  });
+  const [keywords, setKeywords] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('arc2_keywords');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [processingMode, setProcessingMode] = useState<'normal' | 'keywords' | 'text-only'>(() => {
+    return (localStorage.getItem('arc2_processing_mode') as 'normal' | 'keywords' | 'text-only') || 'text-only';
   });
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -64,6 +77,20 @@ const App: React.FC = () => {
     localStorage.setItem('arc2_chat_history', JSON.stringify(chatHistory));
   }, [chatHistory]);
 
+  useEffect(() => {
+    localStorage.setItem('arc2_keywords', JSON.stringify(keywords));
+  }, [keywords]);
+
+  useEffect(() => {
+    localStorage.setItem('arc2_processing_mode', processingMode);
+    
+    // Clear audio data when switching away from normal mode
+    if (processingMode !== 'normal' && base64Audio) {
+      setBase64Audio('');
+      setVideoFile(null);
+    }
+  }, [processingMode, base64Audio]);
+
   // Save API URL to localStorage whenever it changes
   useEffect(() => {
     localStorage.setItem('arc2_api_url', apiUrl);
@@ -75,8 +102,9 @@ const App: React.FC = () => {
       return;
     }
 
-    if (!base64Audio) {
-      alert('Please upload a video/audio file');
+    // Check audio requirement based on processing mode
+    if (processingMode === 'normal' && !base64Audio) {
+      alert('Please upload a video/audio file for normal processing mode');
       return;
     }
 
@@ -85,14 +113,29 @@ const App: React.FC = () => {
       return;
     }
 
-    // Save the request to localStorage before sending
-    localStorageService.saveRequest({
+    // Prepare request data based on processing mode
+    const requestData: any = {
       transcript: transcript.trim(),
       language,
       org_id: orgId.trim(),
       config_id: configId.trim(),
       chat_history: chatHistory
-    });
+    };
+
+    // Add optional fields based on mode
+    if (processingMode === 'normal') {
+      // Normal mode: always include audio (required)
+      requestData.base64_audio = base64Audio;
+    } else if (processingMode === 'text-only') {
+      // Text-only mode: no additional fields needed
+      // Audio is not included even if available
+    } else if (processingMode === 'keywords') {
+      // Keywords mode: include keywords array
+      requestData.keywords = keywords;
+    }
+
+    // Save the request to localStorage before sending
+    localStorageService.saveRequest(requestData);
 
     setIsProcessing(true);
     setMessages([]);
@@ -104,14 +147,7 @@ const App: React.FC = () => {
       }
 
       // Start SSE request
-      const eventSource = await sendSSERequest({
-        transcript: transcript.trim(),
-        language,
-        base64_audio: base64Audio,
-        org_id: orgId.trim(),
-        config_id: configId.trim(),
-        chat_history: chatHistory
-      }, apiUrl.trim());
+      const eventSource = await sendSSERequest(requestData, apiUrl.trim());
 
       eventSourceRef.current = eventSource;
 
@@ -188,6 +224,8 @@ const App: React.FC = () => {
       setConfigId('');
       setLanguage('en');
       setChatHistory([]);
+      setKeywords([]);
+      setProcessingMode('text-only');
       setBase64Audio('');
       setVideoFile(null);
       setApiUrl('http://localhost:8000');
@@ -198,6 +236,8 @@ const App: React.FC = () => {
       localStorage.removeItem('arc2_config_id');
       localStorage.removeItem('arc2_language');
       localStorage.removeItem('arc2_chat_history');
+      localStorage.removeItem('arc2_keywords');
+      localStorage.removeItem('arc2_processing_mode');
       localStorage.removeItem('arc2_api_url');
       
       alert('All form data has been cleared.');
@@ -239,6 +279,9 @@ const App: React.FC = () => {
             <p className="text-lg text-gray-600">
               AI-powered answer generation with real-time Server-Sent Events
             </p>
+            <p className="text-sm text-gray-500 mt-1">
+              Supports audio-based, text-only, and direct keyword processing modes
+            </p>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -278,12 +321,28 @@ const App: React.FC = () => {
                   </select>
                 </div>
 
-                <VideoUpload
-                  onFileSelect={setVideoFile}
-                  onBase64Ready={setBase64Audio}
+                <ProcessingModeToggle 
+                  mode={processingMode}
+                  onModeChange={setProcessingMode}
+                  hasAudio={!!base64Audio}
                 />
 
+                {/* Conditional UI based on processing mode */}
+                {processingMode === 'normal' && (
+                  <VideoUpload
+                    onFileSelect={setVideoFile}
+                    onBase64Ready={setBase64Audio}
+                  />
+                )}
+
                 <TranscriptInput value={transcript} onChange={setTranscript} />
+
+                {processingMode === 'keywords' && (
+                  <KeywordsInput 
+                    value={keywords}
+                    onChange={setKeywords}
+                  />
+                )}
 
                 <ChatHistoryInput value={chatHistory} onChange={setChatHistory} />
 
@@ -292,7 +351,14 @@ const App: React.FC = () => {
                   <div className="flex space-x-4">
                     <button
                       onClick={handleSubmit}
-                      disabled={isProcessing || !transcript.trim() || !orgId.trim() || !configId.trim() || !base64Audio || !apiUrl.trim()}
+                      disabled={
+                        isProcessing || 
+                        !transcript.trim() || 
+                        !orgId.trim() || 
+                        !configId.trim() || 
+                        (processingMode === 'normal' && !base64Audio) ||
+                        !apiUrl.trim()
+                      }
                       className="flex-1 bg-primary-600 text-white py-2 px-4 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
                       {isProcessing ? (
@@ -304,7 +370,11 @@ const App: React.FC = () => {
                           Processing...
                         </span>
                       ) : (
-                        'Start Processing'
+                        <>
+                          Start Processing
+                          {processingMode === 'keywords' && ' (Skip Validation)'}
+                          {processingMode === 'text-only' && ' (Text Only)'}
+                        </>
                       )}
                     </button>
                     
@@ -364,6 +434,17 @@ const App: React.FC = () => {
                     : 'bg-green-100 text-green-800'
                 }`}>
                   {isProcessing ? 'Processing' : 'Ready'}
+                </span>
+                <span className="text-sm font-medium text-gray-700">Mode:</span>
+                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                  processingMode === 'keywords' 
+                    ? 'bg-purple-100 text-purple-800'
+                    : processingMode === 'text-only'
+                    ? 'bg-blue-100 text-blue-800' 
+                    : 'bg-gray-100 text-gray-800'
+                }`}>
+                  {processingMode === 'keywords' ? 'Keywords (Skip Validation)' : 
+                   processingMode === 'text-only' ? 'Text Only' : 'Normal (Audio + Text)'}
                 </span>
               </div>
               <div className="text-sm text-gray-500">

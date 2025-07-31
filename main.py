@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import uvicorn
 import logging
 from src.app_config import config
@@ -41,10 +41,11 @@ app.add_middleware(
 class AnswerRequest(BaseModel):
     transcript: str
     language: str
-    base64_audio: str
+    base64_audio: Optional[str] = None  # Made optional to support text-only requests
     org_id: str  # Organization ID (partition key)
     config_id: str  # Configuration ID within the organization
     chat_history: List[ChatMessage] = []  # Previous conversation history
+    keywords: Optional[List[str]] = None  # If provided, skip validation and use directly
 
 @app.get("/")
 async def root():
@@ -59,6 +60,8 @@ async def answer_sse(request: AnswerRequest):
     """
     Complete pipeline with Server-Sent Events: Validate with Gemini, search KM, then generate answer with OpenAI GPT
     Sends data stage by stage via SSE for real-time progress updates
+    Supports both audio-based and text-only requests (when base64_audio is not provided)
+    If keywords are provided directly, validation step is skipped
     """
     return StreamingResponse(
         execute_answer_flow_sse(
@@ -67,7 +70,8 @@ async def answer_sse(request: AnswerRequest):
             base64_audio=request.base64_audio,
             org_id=request.org_id,
             config_id=request.config_id,
-            chat_history=request.chat_history or []
+            chat_history=request.chat_history or [],
+            keywords=request.keywords
         ),
         media_type="text/event-stream",
         headers={

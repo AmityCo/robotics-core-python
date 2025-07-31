@@ -10,9 +10,9 @@ from typing import Optional
 try:
     import numpy as np
     AUDIO_PROCESSING_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     AUDIO_PROCESSING_AVAILABLE = False
-    logging.warning("numpy not available. Audio trimming will be disabled.")
+    logging.warning(f"numpy not available. Audio trimming will be disabled. Error: {e}")
 
 logger = logging.getLogger(__name__)
 

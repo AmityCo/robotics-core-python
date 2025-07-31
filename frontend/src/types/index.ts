@@ -19,10 +19,11 @@ export interface ChatMessage {
 export interface AnswerRequest {
   transcript: string;
   language: string;
-  base64_audio: string;
+  base64_audio?: string;  // Made optional to support text-only requests
   org_id: string;
   config_id: string;
   chat_history?: ChatMessage[];
+  keywords?: string[];    // Optional - skip validation if provided
 }
 
 // Local Storage Types

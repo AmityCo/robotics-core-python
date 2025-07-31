@@ -77,7 +77,7 @@ def configure_telemetry() -> Optional[trace.Tracer]:
         
         # Set up automatic instrumentation
         _setup_auto_instrumentation()
-        
+         
         _telemetry_initialized = True
         logger.info("Azure Application Insights telemetry configured successfully")
         
@@ -109,9 +109,13 @@ def _setup_logging_integration():
             connection_string=config.APPLICATIONINSIGHTS_CONNECTION_STRING
         )
         
-        # Set up logger provider with batch processing
+        # Set up logger provider with batch processing and reduced timeout
         logger_provider = LoggerProvider()
-        log_processor = BatchLogRecordProcessor(azure_log_exporter)
+        log_processor = BatchLogRecordProcessor(
+            azure_log_exporter,
+            export_timeout_millis=5000,  # Reduce timeout to 5 seconds
+            schedule_delay_millis=1000   # Reduce delay to 1 second
+        )
         logger_provider.add_log_record_processor(log_processor)
         
         # Create and configure the logging handler
