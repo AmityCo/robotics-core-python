@@ -13,13 +13,14 @@ from src.telemetry import configure_telemetry, instrument_fastapi
 # Configure logging with timestamp format
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
 # Silence Azure Core logging
 logging.getLogger('azure.core.pipeline.policies.http_logging_policy').setLevel(logging.WARNING)
 logging.getLogger('azure.storage').setLevel(logging.WARNING)
+logging.getLogger('azure.monitor.opentelemetry.exporter.export._base').setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 

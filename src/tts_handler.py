@@ -101,7 +101,7 @@ class TTSHandler:
             
             # Generate cache key
             cache_key = self._generate_cache_key(phoneme_text, language, model_name)
-            logger.info("Checking cache for audio: text='%s', language='%s', model='%s'", text[:50], language, model_name)
+            logger.info("Checking cache for audio: text='%s', language='%s', model='%s'", phoneme_text[:50], language, model_name)
             # Try to get cached audio first
             cached_audio = azure_storage_handler.get_cached_audio(cache_key)
             if cached_audio:

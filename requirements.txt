@@ -16,4 +16,4 @@ opentelemetry-instrumentation-fastapi==0.48b0
 opentelemetry-instrumentation-requests==0.48b0
 opentelemetry-instrumentation-boto3sqs==0.48b0
 azure-monitor-opentelemetry-exporter==1.0.0b27
-numpy==2.3.2
+numpy==1.26.1

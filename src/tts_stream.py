@@ -14,15 +14,9 @@ from dataclasses import dataclass
 from src.org_config import OrgConfigData, TTSModel
 from src.requests_handler import get as cached_get
 from src.tts_handler import TTSHandler
+from src.phoneme_manager import PhonemeManager
 
 logger = logging.getLogger(__name__)
-
-@dataclass
-class TtsPhoneme:
-    """Represents a phoneme mapping for TTS"""
-    name: str
-    phoneme: Optional[str] = None
-    sub: Optional[str] = None
 
 class SSMLFormatter:
     """
@@ -39,123 +33,35 @@ class SSMLFormatter:
         """
         self.azure_config = azure_config
         self.remove_bracketed_words = remove_bracketed_words
-        self.localized_phonemes: Dict[str, List[TtsPhoneme]] = {}
-        self.global_phonemes: List[TtsPhoneme] = []
         self.phonemes_loaded = False
-        # Cache for pre-compiled patterns per language
+        # Cache for pre-compiled patterns per language - now managed by PhonemeManager
         self._phoneme_patterns_cache: Dict[str, List[tuple]] = {}
         
     async def load_phonemes(self) -> None:
-        """Load phoneme data from configured URLs"""
+        """Load phoneme data from configured URLs using PhonemeManager"""
         if self.phonemes_loaded:
             return
             
         try:
-            # Load global phonemes if available
-            if hasattr(self.azure_config, 'phonemeUrl') and self.azure_config.phonemeUrl:
-                self.global_phonemes = await self._load_phoneme_data(self.azure_config.phonemeUrl)
-                logger.info(f"Loaded {len(self.global_phonemes)} global phonemes")
-            
-            # Load localized phonemes for each model
-            for model in self.azure_config.models:
-                if hasattr(model, 'phonemeUrl') and model.phonemeUrl:
-                    lang_phonemes = await self._load_phoneme_data(model.phonemeUrl)
-                    if lang_phonemes:
-                        self.localized_phonemes[model.language.lower()] = lang_phonemes
-                        logger.info(f"Loaded {len(lang_phonemes)} phonemes for {model.language}")
-            
+            # Get phoneme patterns cache from PhonemeManager
+            self._phoneme_patterns_cache = await PhonemeManager.get_phoneme_patterns_cache(self.azure_config)
             self.phonemes_loaded = True
-            # Pre-compile patterns for all languages after loading
-            self._precompile_phoneme_patterns()
+            logger.info(f"Loaded phoneme patterns for {len(self._phoneme_patterns_cache)} languages")
             
         except Exception as e:
             logger.error(f"Failed to load phonemes: {str(e)}")
     
     def _precompile_phoneme_patterns(self) -> None:
         """Pre-compile regex patterns for all languages to improve performance"""
-        # Pre-compile patterns for each language
-        all_languages = set(self.localized_phonemes.keys())
-        
-        # Also create a default pattern set for languages without specific phonemes
-        for language in all_languages.union({'default'}):
-            self._phoneme_patterns_cache[language] = self._compile_patterns_for_language(language)
+        # This method is now deprecated since PhonemeManager handles pattern compilation
+        # Keeping for backward compatibility but it's a no-op
+        pass
     
     def _compile_patterns_for_language(self, language: str) -> List[tuple]:
         """Compile regex patterns for a specific language"""
-        if language == 'default':
-            localized = []
-        else:
-            localized = self.localized_phonemes.get(language, [])
-        
-        # Create phoneme map (prioritize localized over global)
-        phoneme_map = {}
-        
-        # Add global phonemes first
-        for phoneme in self.global_phonemes:
-            if phoneme.name and (phoneme.sub or phoneme.phoneme):
-                phoneme_map[phoneme.name] = phoneme
-        
-        # Add localized phonemes (will override global ones with same name)
-        for phoneme in localized:
-            if phoneme.name and (phoneme.sub or phoneme.phoneme):
-                phoneme_map[phoneme.name] = phoneme
-        
-        if not phoneme_map:
-            return []
-        
-        # Sort names by length (longest first) and compile patterns
-        sorted_names = sorted(phoneme_map.keys(), key=len, reverse=True)
-        patterns_and_replacements = []
-        
-        for name_key in sorted_names:
-            phoneme_item = phoneme_map[name_key]
-            
-            # Create replacement tag
-            if phoneme_item.sub:
-                replacement_tag = f'<sub alias="{phoneme_item.sub}">{name_key}</sub>'
-            else:
-                replacement_tag = f'<phoneme alphabet="ipa" ph="{phoneme_item.phoneme}">{name_key}</phoneme>'
-            
-            # Pre-compile regex pattern
-            escaped_name = re.escape(name_key)
-            pattern = re.compile(rf'(<(?:phoneme|sub)\b[^>]*>.*?</(?:phoneme|sub)>)|(\b{escaped_name}\b)', 
-                               flags=re.IGNORECASE | re.DOTALL)
-            
-            patterns_and_replacements.append((pattern, replacement_tag, name_key))
-        
-        return patterns_and_replacements
-    
-    async def _load_phoneme_data(self, url: str) -> List[TtsPhoneme]:
-        """Load phoneme data from a URL using cached requests"""
-        try:
-            logger.info(f"Loading phoneme data from: {url}")
-            
-            # Use cached requests handler for better performance and caching
-            response = await cached_get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                phonemes = []
-                for item in data:
-                    if isinstance(item, dict) and 'name' in item:
-                        phoneme = TtsPhoneme(
-                            name=item['name'],
-                            phoneme=item.get('phoneme'),
-                            sub=item.get('sub')
-                        )
-                        # Only add if it has either phoneme or sub
-                        if phoneme.phoneme or phoneme.sub:
-                            phonemes.append(phoneme)
-                
-                logger.info(f"Successfully loaded {len(phonemes)} phonemes from {url}")
-                return phonemes
-            else:
-                logger.error(f"Failed to load phonemes from {url}: {response.status_code}")
-                
-        except Exception as e:
-            logger.error(f"Error loading phonemes from {url}: {str(e)}")
-        
-        return []
+        # This method is now deprecated since PhonemeManager handles pattern compilation
+        # Keeping for backward compatibility but delegating to cached patterns
+        return self._phoneme_patterns_cache.get(language, self._phoneme_patterns_cache.get('default', []))
     
     def transform_text(self, text: str) -> str:
         """

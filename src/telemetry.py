@@ -15,11 +15,21 @@ from opentelemetry.instrumentation.requests import RequestsInstrumentor
 from opentelemetry.instrumentation.boto3sqs import Boto3SQSInstrumentor
 
 try:
-    from azure.monitor.opentelemetry.exporter import AzureMonitorTraceExporter
+    from azure.monitor.opentelemetry.exporter import AzureMonitorTraceExporter, AzureMonitorLogExporter
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
     AZURE_MONITOR_AVAILABLE = True
 except ImportError:
-    AZURE_MONITOR_AVAILABLE = False
-    logging.warning("Azure Monitor exporter not available. Install azure-monitor-opentelemetry-exporter")
+    try:
+        # Fallback for older versions
+        from azure.monitor.opentelemetry.exporter import AzureMonitorTraceExporter, AzureMonitorLogExporter
+        from opentelemetry._logs import LoggerProvider
+        from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+        from opentelemetry.sdk._logs import LoggingHandler
+        AZURE_MONITOR_AVAILABLE = True
+    except ImportError:
+        AZURE_MONITOR_AVAILABLE = False
+        logging.warning("Azure Monitor exporter not available. Install azure-monitor-opentelemetry-exporter")
 
 from .app_config import config
 
@@ -53,14 +63,17 @@ def configure_telemetry() -> Optional[trace.Tracer]:
         tracer_provider = TracerProvider()
         trace.set_tracer_provider(tracer_provider)
         
-        # Configure Azure Monitor exporter
-        azure_exporter = AzureMonitorTraceExporter(
+        # Configure Azure Monitor exporter for traces
+        azure_trace_exporter = AzureMonitorTraceExporter(
             connection_string=config.APPLICATIONINSIGHTS_CONNECTION_STRING
         )
         
-        # Add the exporter to the tracer provider with batch processing
-        span_processor = BatchSpanProcessor(azure_exporter)
+        # Add the trace exporter to the tracer provider with batch processing
+        span_processor = BatchSpanProcessor(azure_trace_exporter)
         tracer_provider.add_span_processor(span_processor)
+        
+        # Set up logging integration
+        _setup_logging_integration()
         
         # Set up automatic instrumentation
         _setup_auto_instrumentation()
@@ -87,6 +100,34 @@ def _setup_auto_instrumentation():
         
     except Exception as e:
         logger.warning(f"Failed to set up some auto-instrumentation: {str(e)}")
+
+def _setup_logging_integration():
+    """Set up Azure Monitor logging integration to send logs to Application Insights"""
+    try:
+        # Configure Azure Monitor log exporter
+        azure_log_exporter = AzureMonitorLogExporter(
+            connection_string=config.APPLICATIONINSIGHTS_CONNECTION_STRING
+        )
+        
+        # Set up logger provider with batch processing
+        logger_provider = LoggerProvider()
+        log_processor = BatchLogRecordProcessor(azure_log_exporter)
+        logger_provider.add_log_record_processor(log_processor)
+        
+        # Create and configure the logging handler
+        logging_handler = LoggingHandler(
+            level=logging.INFO,  # Send INFO level and above to Application Insights
+            logger_provider=logger_provider
+        )
+        
+        # Add the handler to the root logger to capture all logging
+        root_logger = logging.getLogger()
+        root_logger.addHandler(logging_handler)
+        
+        logger.info("Azure Monitor logging integration enabled - all logs will be sent to Application Insights")
+        
+    except Exception as e:
+        logger.warning(f"Failed to set up logging integration: {str(e)}")
 
 def instrument_fastapi(app):
     """
