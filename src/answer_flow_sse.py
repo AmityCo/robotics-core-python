@@ -194,6 +194,31 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         
         logger.info(f"Loaded org config for: {org_config.displayName} (kmId: {org_config.kmId})")
         
+        # Auto-trim audio silence if enabled in org config
+        if base64_audio and org_config.audio and org_config.audio.auto_trim_silent:
+            try:
+                logger.info("Auto-trimming audio silence is enabled, processing audio...")
+                
+                # Import audio helper
+                from .audio_helper import AudioProcessor
+                
+                # Decode base64 audio
+                audio_bytes = base64.b64decode(base64_audio)
+                logger.debug(f"Decoded audio: {len(audio_bytes)} bytes")
+                
+                # Trim silence using AudioProcessor
+                audio_processor = AudioProcessor(enable_trimming=True)
+                trimmed_audio_bytes = audio_processor.trim_silence(audio_bytes)
+                logger.info(f"Audio trimming completed: {len(audio_bytes)} -> {len(trimmed_audio_bytes)} bytes")
+                
+                # Re-encode to base64
+                base64_audio = base64.b64encode(trimmed_audio_bytes).decode('utf-8')
+                logger.debug("Audio re-encoded to base64 after trimming")
+                
+            except Exception as e:
+                logger.error(f"Failed to trim audio silence: {str(e)}")
+                logger.info("Continuing with original audio")
+        
         # Initialize TTS streamer if TTS config is available
         tts_streamer = None
         

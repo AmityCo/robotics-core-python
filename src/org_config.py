@@ -54,6 +54,7 @@ class AudioThreshold(BaseModel):
 
 class AudioConfig(BaseModel):
     multiplierThreadsholds: List[AudioThreshold]
+    auto_trim_silent: Optional[bool] = False
 
 class DynamicThresholdConfig(BaseModel):
     enabled: bool
