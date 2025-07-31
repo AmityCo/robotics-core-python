@@ -4,33 +4,29 @@
     "audio_url": "https://storage.googleapis.com/amity-robotics-audio-files/audio-training-data/a6ba56ef_1735724492395.wav",
     "transcript": "",
     "expected_answer": "Sushiro อยู่ไหนหรอ Sushiro อยู่ไหนหรอ",
-    "generated_answer": "<thinking>\nUser's query: Sushiro อยู่ไหนหรอ\nIntent: User wants to know the location of Sushiro.\nFAQ check: No FAQ match. Searching documents.\nSearching documents for Sushiro. Result: Found in doc-386.\nQuery resolution: Handled by direct document retrieval.\n</thinking>\nSushiro อยู่ที่ Siam Paragon ชั้น 4 โซน Crystal Court คะ </s>\n[meta:docs] {\"doc-ids\": \"doc-386\"}",
-    "model_used": "gpt-4.1-mini",
+    "generated_answer": "",
+    "model_used": "",
     "language": "th",
-    "validation_correction": "Sushiro อยู่ไหนหรอ",
-    "km_results_count": 1,
-    "stage_timings": {
-      "request_start": "2025-07-28T16:51:30.896573",
-      "total_duration": 8.51104211807251
-    },
+    "validation_correction": "",
+    "km_results_count": 0,
+    "stage_timings": {},
     "api_type": "Regular",
-    "success": true
+    "success": false,
+    "error": "403 Client Error: Forbidden for url: https://storage.googleapis.com/amity-robotics-audio-files/audio-training-data/a6ba56ef_1735724492395.wav"
   },
   {
     "row": 2,
     "audio_url": "https://storage.googleapis.com/amity-robotics-audio-files/audio-training-data/a90ab61e_1735801492714.wav",
     "transcript": "",
     "expected_answer": "what floor is Loro piano on",
-    "generated_answer": "<thinking>\nUser’s query: What floor is Loro Piana on?  \nIntent: To find the floor location of Loro Piana store in the mall.  \nFAQ check: Checking for FAQ document match.  \nNo FAQ match. Searching documents.  \nSearching documents for Loro Piana. Result: Found in doc-691.  \nQuery resolution: Handled by direct document retrieval.  \n</thinking>\n\nLoro Piana à¸à¸µà¹ Siam Paragon à¸­à¸¢à¸¹à¹à¸à¸µà¹ Floor M, Luxe Hall Zone à¸à¹à¸° </s>  \nà¹à¸à¸µà¸¢à¸ 10.00 - 21.30 à¸. </s>\n[meta:docs] {\"doc-ids\": \"doc-691\"}",
-    "model_used": "gpt-4.1-mini",
+    "generated_answer": "",
+    "model_used": "",
     "language": "en",
-    "validation_correction": "What floor is Loro Piana on?",
-    "km_results_count": 5,
-    "stage_timings": {
-      "request_start": "2025-07-28T16:51:44.233303",
-      "total_duration": 13.3363778591156
-    },
+    "validation_correction": "",
+    "km_results_count": 0,
+    "stage_timings": {},
     "api_type": "Regular",
-    "success": true
+    "success": false,
+    "error": "403 Client Error: Forbidden for url: https://storage.googleapis.com/amity-robotics-audio-files/audio-training-data/a90ab61e_1735801492714.wav"
   }
 ]

@@ -33,3 +33,6 @@ Thumbs.db
 
 # Test artifacts
 test_results*.json
+demo_sse_enhancement.py
+test_sse_integration.py
+test_sse_status.py
