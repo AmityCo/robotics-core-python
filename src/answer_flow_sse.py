@@ -22,6 +22,7 @@ from src.generator import OpenAIGenerationRequest, stream_answer_with_openai, st
 from src.org_config import load_org_config
 from src.tts_stream import TTSStreamer
 from src.models import ChatMessage
+from src.km_data_formatter import extract_relevant_km_data
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -286,12 +287,29 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
 
         # convert unique_queries into 1 string separated by space
         query_string = ' '.join(unique_queries)
+        # Get the assistantKey for the current language from org config
+        assistant_key = None
+        for localization in org_config.localization:
+            if localization.language == language:
+                assistant_key = localization.assistantKey
+                break
+        
+        if not assistant_key:
+            # Fallback to default primary language if current language not found
+            for localization in org_config.localization:
+                if localization.language == org_config.defaultPrimaryLanguage:
+                    assistant_key = localization.assistantKey
+                    break
+        
+        if not assistant_key:
+            raise ValueError(f"No assistantKey found for language {language} or default language {org_config.defaultPrimaryLanguage}")
+        
         # Perform KM batch search using org config
         km_request = KMBatchSearchRequest(
             queries=[query_string],
             language=language,
             km_id=org_config.kmId,
-            km_token=config.ASAP_KM_TOKEN,
+            km_token=assistant_key,
             max_results=10
         )
         
@@ -457,7 +475,16 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                     json_match = re.search(r'\{[^}]+\}', metadata_content)
                     if json_match:
                         metadata_json = json.loads(json_match.group())
-                        sse_handler.send('metadata', data=metadata_json)
+                        
+                        # Extract relevant data from KM results based on metadata doc-ids
+                        relevant_data = extract_relevant_km_data(metadata_json, km_result)
+                        
+                        # Send the simplified relevant data object directly
+                        sse_handler.send('metadata', data=relevant_data)
+                        logger.info(f"Sent simplified metadata with {len(relevant_data.get('items', []))} relevant data items")
+                    else:
+                        # If no JSON found, send raw metadata content
+                        sse_handler.send('metadata', data={'raw': metadata_content.strip()})
                 except json.JSONDecodeError:
                     sse_handler.send('metadata', data={'raw': metadata_content.strip()})
             
