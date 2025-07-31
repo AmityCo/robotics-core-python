@@ -42,6 +42,8 @@ class SSMLFormatter:
         self.localized_phonemes: Dict[str, List[TtsPhoneme]] = {}
         self.global_phonemes: List[TtsPhoneme] = []
         self.phonemes_loaded = False
+        # Cache for pre-compiled patterns per language
+        self._phoneme_patterns_cache: Dict[str, List[tuple]] = {}
         
     async def load_phonemes(self) -> None:
         """Load phoneme data from configured URLs"""
@@ -63,9 +65,65 @@ class SSMLFormatter:
                         logger.info(f"Loaded {len(lang_phonemes)} phonemes for {model.language}")
             
             self.phonemes_loaded = True
+            # Pre-compile patterns for all languages after loading
+            self._precompile_phoneme_patterns()
             
         except Exception as e:
             logger.error(f"Failed to load phonemes: {str(e)}")
+    
+    def _precompile_phoneme_patterns(self) -> None:
+        """Pre-compile regex patterns for all languages to improve performance"""
+        # Pre-compile patterns for each language
+        all_languages = set(self.localized_phonemes.keys())
+        
+        # Also create a default pattern set for languages without specific phonemes
+        for language in all_languages.union({'default'}):
+            self._phoneme_patterns_cache[language] = self._compile_patterns_for_language(language)
+    
+    def _compile_patterns_for_language(self, language: str) -> List[tuple]:
+        """Compile regex patterns for a specific language"""
+        if language == 'default':
+            localized = []
+        else:
+            localized = self.localized_phonemes.get(language, [])
+        
+        # Create phoneme map (prioritize localized over global)
+        phoneme_map = {}
+        
+        # Add global phonemes first
+        for phoneme in self.global_phonemes:
+            if phoneme.name and (phoneme.sub or phoneme.phoneme):
+                phoneme_map[phoneme.name] = phoneme
+        
+        # Add localized phonemes (will override global ones with same name)
+        for phoneme in localized:
+            if phoneme.name and (phoneme.sub or phoneme.phoneme):
+                phoneme_map[phoneme.name] = phoneme
+        
+        if not phoneme_map:
+            return []
+        
+        # Sort names by length (longest first) and compile patterns
+        sorted_names = sorted(phoneme_map.keys(), key=len, reverse=True)
+        patterns_and_replacements = []
+        
+        for name_key in sorted_names:
+            phoneme_item = phoneme_map[name_key]
+            
+            # Create replacement tag
+            if phoneme_item.sub:
+                replacement_tag = f'<sub alias="{phoneme_item.sub}">{name_key}</sub>'
+            else:
+                replacement_tag = f'<phoneme alphabet="ipa" ph="{phoneme_item.phoneme}">{name_key}</phoneme>'
+            
+            # Pre-compile regex pattern
+            escaped_name = re.escape(name_key)
+            pattern = re.compile(rf'(<(?:phoneme|sub)\b[^>]*>.*?</(?:phoneme|sub)>)|(\b{escaped_name}\b)', 
+                               flags=re.IGNORECASE | re.DOTALL)
+            
+            patterns_and_replacements.append((pattern, replacement_tag, name_key))
+        
+        return patterns_and_replacements
     
     async def _load_phoneme_data(self, url: str) -> List[TtsPhoneme]:
         """Load phoneme data from a URL using cached requests"""
@@ -128,57 +186,29 @@ class SSMLFormatter:
         Returns:
             Text with phoneme tags applied
         """
-        language_lower = language.lower()
-        
-        # Get phonemes for this language
-        localized = self.localized_phonemes.get(language_lower, [])
-        global_phonemes = self.global_phonemes
-        
-        # Get all available names
-        all_names = []
-        for phoneme in localized:
-            if phoneme.name:
-                all_names.append(phoneme.name)
-        for phoneme in global_phonemes:
-            if phoneme.name:
-                all_names.append(phoneme.name)
-        
-        if not all_names:
+        # Early return for empty text
+        if not text or not text.strip():
             return text
         
-        # Remove duplicates and sort by length (longest first)
-        unique_names = list(set(all_names))
-        sorted_names = sorted(unique_names, key=len, reverse=True)
+        language_lower = language.lower()
+        
+        # Use pre-compiled patterns if available
+        patterns_and_replacements = self._phoneme_patterns_cache.get(
+            language_lower, 
+            self._phoneme_patterns_cache.get('default', [])
+        )
+        
+        if not patterns_and_replacements:
+            return text
         
         current_text = text
         
-        for name_key in sorted_names:
-            # Find phoneme item (prioritize localized)
-            phoneme_item = None
-            for phoneme in localized:
-                if phoneme.name == name_key:
-                    phoneme_item = phoneme
-                    break
-            
-            if not phoneme_item:
-                for phoneme in global_phonemes:
-                    if phoneme.name == name_key:
-                        phoneme_item = phoneme
-                        break
-            
-            if not phoneme_item or (not phoneme_item.sub and not phoneme_item.phoneme):
+        # Apply all transformations using pre-compiled patterns
+        for pattern, replacement_tag, name_key in patterns_and_replacements:
+            # Quick check if the name exists in the text before expensive regex
+            if name_key.lower() not in current_text.lower():
                 continue
-            
-            # Create replacement tag
-            if phoneme_item.sub:
-                replacement_tag = f'<sub alias="{phoneme_item.sub}">{name_key}</sub>'
-            else:
-                replacement_tag = f'<phoneme alphabet="ipa" ph="{phoneme_item.phoneme}">{name_key}</phoneme>'
-            
-            # Create regex pattern to avoid double-replacement
-            escaped_name = re.escape(name_key)
-            pattern = rf'(<(?:phoneme|sub)\b[^>]*>.*?</(?:phoneme|sub)>)|(\b{escaped_name}\b)'
-            
+                
             def replace_func(match):
                 if match.group(1):  # Already tagged
                     return match.group(0)
@@ -187,7 +217,7 @@ class SSMLFormatter:
                 else:
                     return match.group(0)
             
-            current_text = re.sub(pattern, replace_func, current_text, flags=re.IGNORECASE | re.DOTALL)
+            current_text = pattern.sub(replace_func, current_text)
         
         return current_text
     
@@ -216,7 +246,9 @@ class SSMLFormatter:
         
         # Apply phoneme transformations
         if self.phonemes_loaded:
+            start_time = time.time()
             phoneme_text = self.transform_with_phonemes(transformed_text, model.language)
+            logger.info(f"Phoneme transformation took {time.time() - start_time:.2f} seconds")
         else:
             phoneme_text = transformed_text
         
@@ -272,7 +304,7 @@ class SSMLFormatter:
     </voice>
 </speak>'''
         
-        return ssml
+        return ssml, phoneme_text
 
 @dataclass
 class TTSChunk:
@@ -515,21 +547,7 @@ class TTSStreamer:
                 
         except Exception as e:
             logger.error(f"Error generating speech: {str(e)}")
-            return None
-    
-    def _create_ssml(self, text: str) -> str:
-        """
-        Create SSML for the text (legacy method, kept for backward compatibility)
-        
-        Args:
-            text: Text to convert
-            
-        Returns:
-            SSML string
-        """
-        # Use the new formatter for backward compatibility
-        return self.ssml_formatter.create_ssml(text, self.model, self.chunk_order)
-    
+            return None 
     
     def get_available_voices(self) -> Optional[List[Dict[str, Any]]]:
         """

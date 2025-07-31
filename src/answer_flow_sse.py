@@ -211,6 +211,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                 logger.info(f"TTS audio sent for text: '{text[:50]}...' (language: {language}, size: {len(audio_data)} bytes)")
             
             tts_streamer = TTSStreamer(org_config, language, audio_callback=tts_audio_callback)
+            await tts_streamer.initialize()
             sse_handler.register_component('tts_processing')
             logger.info("TTS streamer initialized successfully")
         except Exception as e:
