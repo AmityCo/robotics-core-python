@@ -305,11 +305,11 @@ class TTSStreamer:
                 return model
         logger.debug(f"No TTS model found for language: {language}, returning default")
         # Return a default model structure if none found
-        # if thai language, name should be "th-TH-Neural2"
+        # if thai language, name should be "th-TH-PremwadeeNeural
         if language.startswith('th-'):
             return type('TTSModel', (), {
                 'language': language,
-                'name': "th-TH-Neural2",  # Fallback to a common Thai model
+                'name': "th-TH-PremwadeeNeural",  # Fallback to a common Thai model
                 'pitch': None,
                 'phonemeUrl': None
             })()
