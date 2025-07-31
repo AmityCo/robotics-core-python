@@ -8,6 +8,8 @@ from datetime import datetime
 from queue import Empty, Queue
 from typing import Any, Generator
 
+from src.models import SSEStatus
+
 # Configure logger
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,7 @@ class SSEHandler:
         # Registry for tracking multiple completion states
         self._completion_registry = {}
 
-    def send(self, message_type: str, data: Any = None, message: str = None):
+    def send(self, message_type: str, data: Any = None, message: str = None, status: str = None):
         """
         Send an SSE message. Thread-safe method that can be called from any thread.
 
@@ -34,6 +36,7 @@ class SSEHandler:
             message_type: Type of the SSE message (status, error, answer_chunk, etc.)
             data: Data payload for the message
             message: Simple message string (used for status/error messages)
+            status: Status enum value (used for status messages to indicate pipeline stage)
         """
         sse_data = {
             'type': message_type,
@@ -44,6 +47,8 @@ class SSEHandler:
             sse_data['data'] = data
         if message is not None:
             sse_data['message'] = message
+        if status is not None:
+            sse_data['status'] = status
 
         # Put the formatted SSE message into the queue
         sse_message = f"data: {json.dumps(sse_data)}\n\n"
@@ -52,7 +57,7 @@ class SSEHandler:
 
     def send_error(self, error_message: str):
         """Send an error message and mark that an error occurred."""
-        self.send('error', message=error_message)
+        self.send('error', message=error_message, status=SSEStatus.ERROR)
         self.error_occurred.set()
 
     def playAudio(self, fileName: str):
@@ -108,7 +113,7 @@ class SSEHandler:
 
                 # Check if all components are complete
                 if all(self._completion_registry.values()):
-                    self.send('complete', message='Answer pipeline completed successfully')
+                    self.send('complete', message='Answer pipeline completed successfully', status=SSEStatus.COMPLETE)
                     self.is_complete.set()
                     logger.info("All components completed, marking handler as complete")
             else:
@@ -118,7 +123,7 @@ class SSEHandler:
 
     def mark_complete(self):
         """Mark the processing as complete (legacy method - use register_component/mark_component_complete instead)."""
-        self.send('complete', message='Answer pipeline completed successfully')
+        self.send('complete', message='Answer pipeline completed successfully', status=SSEStatus.COMPLETE)
         self.is_complete.set()
 
     def are_all_components_complete(self) -> bool:
