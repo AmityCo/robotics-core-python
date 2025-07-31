@@ -48,7 +48,7 @@ class SSEHandler:
         # Put the formatted SSE message into the queue
         sse_message = f"data: {json.dumps(sse_data)}\n\n"
         self.queue.put(sse_message)
-        logger.debug(f"SSE message queued: {message_type}")
+        logger.info(f"SSE message queued: {message_type}")
 
     def send_error(self, error_message: str):
         """Send an error message and mark that an error occurred."""

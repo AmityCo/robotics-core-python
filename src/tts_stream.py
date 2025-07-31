@@ -303,7 +303,7 @@ class TTSStreamer:
         for model in self.azure_config.models:
             if model.language == language:
                 return model
-        logger.debug(f"No TTS model found for language: {language}, returning default")
+        logger.info(f"No TTS model found for language: {language}, returning default")
         # Return a default model structure if none found
         # if thai language, name should be "th-TH-PremwadeeNeural
         if language.startswith('th-'):
