@@ -35,8 +35,8 @@ class SSEHandler:
         Args:
             message_type: Type of the SSE message (status, error, answer_chunk, etc.)
             data: Data payload for the message
-            message: Simple message string (used for status/error messages)
-            status: Status enum value (used for status messages to indicate pipeline stage)
+            message: Message string (for status type, this contains the status value; for others, it's descriptive text)
+            status: Deprecated - status value is now passed via message parameter for status messages
         """
         sse_data = {
             'type': message_type,
@@ -47,7 +47,8 @@ class SSEHandler:
             sse_data['data'] = data
         if message is not None:
             sse_data['message'] = message
-        if status is not None:
+        # For backwards compatibility, include status field for non-status message types
+        if status is not None and message_type != 'status':
             sse_data['status'] = status
 
         # Put the formatted SSE message into the queue
@@ -57,7 +58,7 @@ class SSEHandler:
 
     def send_error(self, error_message: str):
         """Send an error message and mark that an error occurred."""
-        self.send('error', message=error_message, status=SSEStatus.ERROR)
+        self.send('error', message=SSEStatus.ERROR)
         self.error_occurred.set()
 
     def playAudio(self, fileName: str):
@@ -113,7 +114,7 @@ class SSEHandler:
 
                 # Check if all components are complete
                 if all(self._completion_registry.values()):
-                    self.send('complete', message='Answer pipeline completed successfully', status=SSEStatus.COMPLETE)
+                    self.send('status', message=SSEStatus.COMPLETE)
                     self.is_complete.set()
                     logger.info("All components completed, marking handler as complete")
             else:
@@ -123,7 +124,7 @@ class SSEHandler:
 
     def mark_complete(self):
         """Mark the processing as complete (legacy method - use register_component/mark_component_complete instead)."""
-        self.send('complete', message='Answer pipeline completed successfully', status=SSEStatus.COMPLETE)
+        self.send('status', message=SSEStatus.COMPLETE)
         self.is_complete.set()
 
     def are_all_components_complete(self) -> bool:

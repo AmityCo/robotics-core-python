@@ -180,7 +180,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
     """
     try:
         # Send initial status
-        sse_handler.send('status', message='Starting answer pipeline', status=SSEStatus.STARTING)
+        sse_handler.send('status', message=SSEStatus.STARTING)
         logger.info("Starting answer pipeline in background thread")
         
         # Load organization configuration
@@ -222,7 +222,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         validation_system_prompt, validation_user_prompt, validator_model = await get_validation_prompts_from_org_config(org_config, language)
         
         # Send validation start status
-        sse_handler.send('status', message='Starting validation with Gemini', status=SSEStatus.VALIDATING)
+        sse_handler.send('status', message=SSEStatus.VALIDATING)
         logger.info(f"Starting validation with Gemini using model: {validator_model}")
         
         # Generate and play processing TTS message at the start of validation
@@ -266,7 +266,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         sse_handler.send('validation_result', data=validation_data)
 
         # Send KM search start status
-        sse_handler.send('status', message='Starting knowledge management search', status=SSEStatus.SEARCHING_KM)
+        sse_handler.send('status', message=SSEStatus.SEARCHING_KM)
 
         # Step 2: Perform KM batch search using the validation result
         search_queries: List[str] = []
@@ -321,7 +321,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         sse_handler.send('km_result', data=km_result.dict())
 
         # Send answer generation start status
-        sse_handler.send('status', message='Starting answer generation with OpenAI', status=SSEStatus.GENERATING_ANSWER)
+        sse_handler.send('status', message=SSEStatus.GENERATING_ANSWER)
 
 
         # Play wait audio after validation completion
