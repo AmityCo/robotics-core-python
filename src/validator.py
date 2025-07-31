@@ -65,8 +65,8 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
     
     # Add the validation prompt with transcript included
     user_parts.append({"text": request.validation_user_prompt
-                       .replace("{transcript}", request.transcript)}
-                      .replace("{language}", request.language))
+                       .replace("{transcript}", request.transcript)
+                      .replace("{language}", request.language)})
     
     contents.append({
         "role": "user",

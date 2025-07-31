@@ -21,7 +21,7 @@ from src.validator import GeminiValidationRequest, validate_with_gemini
 from src.generator import OpenAIGenerationRequest, stream_answer_with_openai, stream_answer_with_openai_with_config
 from src.org_config import load_org_config
 from src.tts_stream import TTSStreamer
-from src.models import ChatMessage
+from src.models import ChatMessage, SSEStatus
 from src.km_data_formatter import extract_relevant_km_data
 
 # Configure logger
@@ -182,12 +182,13 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
     """
     try:
         # Send initial status
-        sse_handler.send('status', message='Starting answer pipeline')
+        sse_handler.send('status', message=SSEStatus.STARTING)
         logger.info("Starting answer pipeline in background thread")
         
         # Load organization configuration
         org_config = await load_org_config(org_id, config_id)
         if not org_config:
+            sse_handler.send('status', message=SSEStatus.ERROR)
             sse_handler.send_error(f"Organization configuration not found for orgId: {org_id}, configId: {config_id}")
             return
         
@@ -224,7 +225,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         if keywords is not None:
             # Skip validation - use provided keywords and transcript directly
             logger.info(f"Skipping validation - using provided keywords: {keywords}")
-            sse_handler.send('status', message='Skipping validation - using provided keywords')
+            # sse_handler.send('status', message=SSEStatus.VALIDATING)
             
             # Create a mock validation result using the transcript and provided keywords
             validation_data = {
@@ -243,7 +244,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             
             # Send validation start status
             validation_type = "text-based" if base64_audio is None else "audio-based"
-            sse_handler.send('status', message=f'Starting {validation_type} validation with Gemini')
+            sse_handler.send('status', message=SSEStatus.VALIDATING)
             logger.info(f"Starting {validation_type} validation with Gemini using model: {validator_model}")
             
             # Generate and play processing TTS message at the start of validation
@@ -291,7 +292,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             validation_keywords = validation_result.keywords
 
         # Send KM search start status
-        sse_handler.send('status', message='Starting knowledge management search')
+        sse_handler.send('status', message=SSEStatus.SEARCHING_KM)
 
         # Step 2: Perform KM batch search using the validation/provided data
         search_queries: List[str] = []
@@ -346,7 +347,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         sse_handler.send('km_result', data=km_result.dict())
 
         # Send answer generation start status
-        sse_handler.send('status', message='Starting answer generation with OpenAI')
+        sse_handler.send('status', message=SSEStatus.GENERATING_ANSWER)
 
 
         # Play wait audio after validation completion
@@ -536,11 +537,15 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             # Mark text generation as complete after TTS flush
             sse_handler.mark_component_complete('text_generation')
             
+            # Send completion status
+            sse_handler.send('status', message=SSEStatus.COMPLETE)
+            
         except Exception as e:
             logger.error(f"Error during streaming generation: {str(e)}")
             # print stack trace for debugging
             import traceback
             logger.error(traceback.format_exc())
+            sse_handler.send('status', message=SSEStatus.ERROR)
             sse_handler.send_error(f"Streaming generation failed: {str(e)}")
             raise e
 
@@ -548,6 +553,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
 
     except RequestException as e:
         logger.error(f"Request error: {str(e)}")
+        sse_handler.send('status', message=SSEStatus.ERROR)
         sse_handler.send_error(f"Request failed: {str(e)}")
         # Mark components as complete to avoid hanging
         if 'text_generation' in sse_handler._completion_registry:
@@ -556,6 +562,11 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             sse_handler.mark_component_complete('tts_processing')
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
+        # print traceback for debugging
+        import traceback
+        logger.error(traceback.format_exc())
+        # Send error status and message
+        sse_handler.send('status', message=SSEStatus.ERROR)
         sse_handler.send_error(f"Answer generation failed: {str(e)}")
         # Mark components as complete to avoid hanging
         if 'text_generation' in sse_handler._completion_registry:

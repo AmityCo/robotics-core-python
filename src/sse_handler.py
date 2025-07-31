@@ -50,7 +50,7 @@ class SSEHandler:
         self.queue.put(sse_message)
         # log for non answer_chunk
         if message_type not in ['answer_chunk']:
-            logger.info(f"SSE message queued: {message_type} with data {data} and message '{message}'")
+            logger.info(f"SSE message queued: {message_type} with message '{message}'")
 
     def send_error(self, error_message: str):
         """Send an error message and mark that an error occurred."""
