@@ -10,12 +10,12 @@ class SSEStatus(str, Enum):
     """
     Enumeration of status values for SSE status messages in the answer pipeline
     """
-    STARTING = "starting"
-    VALIDATING = "validating"
-    SEARCHING_KM = "searching_km"
-    GENERATING_ANSWER = "generating_answer"
-    COMPLETE = "complete"
-    ERROR = "error"
+    STARTING = "START"
+    VALIDATING = "VALIDATOR_START"
+    SEARCHING_KM = "SEARCH_START"
+    GENERATING_ANSWER = "GENERATOR_START"
+    COMPLETE = "COMPLETE"
+    ERROR = "ERROR"
 
 
 class ChatMessage(BaseModel):
