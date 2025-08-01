@@ -163,7 +163,7 @@ class OrgConfigData(BaseModel):
     interruption: InterruptionConfig
     defaultPrimaryLanguage: str
     preferredMicrophoneNames: List[str]
-    quickReplies: Optional[List[QuickReply]] = None
+    quickReplies: Optional[List[QuickReply]]
     state: StateConfig
     resources: ResourcesConfig
     stt: STTConfig

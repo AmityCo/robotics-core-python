@@ -18,7 +18,7 @@ from src.app_config import config
 from src.requests_handler import get as cached_get
 from src.km_search import KMBatchSearchRequest, batch_search_km
 from src.validator import GeminiValidationRequest, validate_with_gemini
-from src.generator import OpenAIGenerationRequest, stream_answer_with_openai, stream_answer_with_openai_with_config
+from src.generator import OpenAIGenerationRequest, stream_answer_with_openai_with_config
 from src.org_config import load_org_config
 from src.tts_stream import TTSStreamer
 from src.models import ChatMessage, SSEStatus
@@ -413,7 +413,8 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             org_id=org_id,
             config_id=config_id,
             question=correction,  # Use the correction from validation or transcript
-            chat_history=chat_history
+            chat_history=chat_history,
+            language=language
         )
         
         # Helper function to send answer chunk and to TTS
