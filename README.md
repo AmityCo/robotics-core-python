@@ -6,11 +6,34 @@ AI-powered answer generation system with real-time progress updates via Server-S
 
 - **Multi-stage Pipeline**: Validation → Knowledge Search → Answer Generation
 - **Real-time Updates**: SSE support for live progress tracking
+- **Standardized Status Messages**: Consistent status reporting via SSEStatus enum
 - **Flexible Input**: Supports audio-based, text-only, and direct keyword input
 - **Skip Validation**: Optional keywords parameter to bypass validation step
 - **Organization Configuration**: Dynamic config from DynamoDB
 - **Multiple AI Models**: Gemini for validation, OpenAI for generation
 - **Knowledge Management**: Integration with Amity Solutions KM API
+
+## SSE Status Messages
+
+The system uses standardized status messages defined in the `SSEStatus` enum:
+
+```python
+class SSEStatus(str, Enum):
+    STARTING = "START"                    # Pipeline initialization
+    VALIDATING = "VALIDATOR_START"        # Gemini validation phase
+    SEARCHING_KM = "SEARCH_START"         # Knowledge management search
+    GENERATING_ANSWER = "GENERATOR_START" # OpenAI answer generation
+    COMPLETE = "COMPLETE"                 # Pipeline completed successfully
+    ERROR = "ERROR"                       # Error occurred
+```
+
+These status values are sent via SSE `status` events to provide consistent, machine-readable progress updates throughout the pipeline.
+
+**Benefits:**
+- **Consistent Monitoring**: Standardized status values for reliable progress tracking
+- **Machine-Readable**: Easy to parse and handle programmatically
+- **Internationalization**: Status codes can be mapped to localized messages
+- **Error Handling**: Clear distinction between progress and error states
 
 ## Quick Start
 
@@ -209,7 +232,16 @@ def handle_sse_response(transcript, language, org_id, base64_audio=None, keyword
                 
                 # Handle different event types
                 if event_type == 'status':
-                    print(f"Status: {data.get('message')}")
+                    status = data.get('message')
+                    status_messages = {
+                        'START': 'Initializing pipeline...',
+                        'VALIDATOR_START': 'Starting validation...',
+                        'SEARCH_START': 'Searching knowledge base...',
+                        'GENERATOR_START': 'Generating answer...',
+                        'COMPLETE': 'Pipeline completed!',
+                        'ERROR': 'Error occurred!'
+                    }
+                    print(f"Status: {status_messages.get(status, status)}")
                 elif event_type == 'validation_result':
                     print(f"Validation: {data['data']['correction']}")
                     print(f"Keywords: {data['data']['keywords']}")
@@ -281,11 +313,15 @@ async function handleSSE(requestData: RequestData) {
             
             switch (event.type) {
               case 'status':
-                console.log(`Status: ${event.message}`);
-                // Check if validation was skipped
-                if (event.message?.includes('skipping validation')) {
-                  console.log('✅ Validation skipped due to provided keywords');
-                }
+                const statusMessages = {
+                  'START': 'Initializing pipeline...',
+                  'VALIDATOR_START': 'Starting validation...',
+                  'SEARCH_START': 'Searching knowledge base...',
+                  'GENERATOR_START': 'Generating answer...',
+                  'COMPLETE': 'Pipeline completed!',
+                  'ERROR': 'Error occurred!'
+                };
+                console.log(`Status: ${statusMessages[event.message] || event.message}`);
                 break;
               case 'validation_result':
                 console.log('Validation completed:', event.data);
@@ -565,7 +601,15 @@ suspend fun main() {
         onEvent = { event ->
             when (event.type) {
                 "status" -> {
-                    println("Status: ${event.message}")
+                    val statusMessages = mapOf(
+                        "START" to "Initializing pipeline...",
+                        "VALIDATOR_START" to "Starting validation...",
+                        "SEARCH_START" to "Searching knowledge base...",
+                        "GENERATOR_START" to "Generating answer...",
+                        "COMPLETE" to "Pipeline completed!",
+                        "ERROR" to "Error occurred!"
+                    )
+                    println("Status: ${statusMessages[event.message] ?: event.message}")
                 }
                 "validation_result" -> {
                     val data = event.data?.jsonObject
@@ -632,7 +676,7 @@ The SSE endpoint emits the following event types:
 
 | Event Type | Description | Data Structure |
 |------------|-------------|----------------|
-| `status` | Pipeline progress updates | `{ message: string }` |
+| `status` | Pipeline progress updates with standardized values | `{ message: SSEStatus }` - Values: `START`, `VALIDATOR_START`, `SEARCH_START`, `GENERATOR_START`, `COMPLETE`, `ERROR` |
 | `validation_result` | Gemini validation completed | `{ correction: string, keywords: string[] }` |
 | `km_result` | Knowledge management search results | `{ data: {documentId: string, document: {id: string, metadata: string, publicId: string, sampleQuestions: string, content: string }, rerankerScore: number, score: number }[], total: number }` |
 | `answer_chunk` | Streaming answer content | `{ content: string }` |
@@ -667,17 +711,20 @@ The SSE endpoint emits the following event types:
 
 ### Event Flow Sequence
 
-1. **status**: "Starting answer pipeline"
-2. **status**: "Starting validation with Gemini"
+1. **status**: `START` - Pipeline initialization
+2. **status**: `VALIDATOR_START` - Beginning validation phase
 3. **validation_result**: Corrected transcript and search terms
-4. **status**: "Starting knowledge management search"
+4. **status**: `SEARCH_START` - Beginning knowledge management search
 5. **km_result**: Search results from knowledge base
-6. **status**: "Starting answer generation with OpenAI"
+6. **status**: `GENERATOR_START` - Beginning answer generation
 7. **answer_chunk**: Streaming answer content (multiple events)
 8. **thinking**: AI reasoning (if enabled)
 9. **metadata**: Answer metadata and sources
 10. **tts_audio**: Audio data (if TTS enabled)
-11. **complete**: Pipeline finished
+11. **status**: `COMPLETE` - Pipeline finished successfully
+
+**Error Scenarios:**
+- **status**: `ERROR` - Sent before any error event when issues occur
 
 ### Error Handling
 

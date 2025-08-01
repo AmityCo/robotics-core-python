@@ -54,6 +54,7 @@ class AudioThreshold(BaseModel):
 
 class AudioConfig(BaseModel):
     multiplierThreadsholds: List[AudioThreshold]
+    auto_trim_silent: Optional[bool] = False
 
 class DynamicThresholdConfig(BaseModel):
     enabled: bool
@@ -107,7 +108,7 @@ class TTSModel(BaseModel):
 class AzureTTSConfig(BaseModel):
     subscriptionKey: str
     lexiconURL: str
-    phonemeUrl: str
+    phonemeUrl: Optional[str] = None
     models: List[TTSModel]
 
 class TTSConfig(BaseModel):
@@ -151,7 +152,7 @@ class OrgConfigData(BaseModel):
     displayName: str
     networkId: str
     onPauseStrategy: str
-    linenotifyToken: str
+    linenotifyToken: Optional[str] = None
     conversation: ConversationConfig
     displayLanguageLogic: str
     gemini: GeminiConfig
@@ -162,7 +163,7 @@ class OrgConfigData(BaseModel):
     interruption: InterruptionConfig
     defaultPrimaryLanguage: str
     preferredMicrophoneNames: List[str]
-    quickReplies: List[QuickReply]
+    quickReplies: Optional[List[QuickReply]] = None
     state: StateConfig
     resources: ResourcesConfig
     stt: STTConfig
@@ -282,8 +283,26 @@ class OrgConfig:
                 logger.error(f"Failed to parse JSON configuration for orgId {org_id}: {str(e)}")
                 raise ValueError(f"Invalid JSON in configValue for orgId: {org_id}")
             except Exception as e:
-                logger.error(f"Failed to validate configuration data for orgId {org_id}, configId {config_id}: {str(e)}")
-                raise ValueError(f"Invalid configuration structure for orgId: {org_id}, configId: {config_id}")
+                # Enhanced error reporting with validation details
+                error_details = str(e)
+                
+                # Check if it's a Pydantic validation error for more specific details
+                if hasattr(e, 'errors'):
+                    # Pydantic ValidationError - extract detailed field errors
+                    validation_errors = []
+                    for error in e.errors():
+                        field_path = " -> ".join(str(loc) for loc in error['loc'])
+                        error_msg = error['msg']
+                        error_type = error['type']
+                        validation_errors.append(f"Field '{field_path}': {error_msg} (type: {error_type})")
+                    
+                    detailed_error = f"Validation failed with {len(validation_errors)} error(s): " + "; ".join(validation_errors)
+                    logger.error(f"Failed to validate configuration data for orgId {org_id}, configId {config_id}: {detailed_error}")
+                    raise ValueError(f"Invalid configuration structure for orgId: {org_id}, configId: {config_id}. {detailed_error}")
+                else:
+                    # Generic exception - provide basic error info
+                    logger.error(f"Failed to validate configuration data for orgId {org_id}, configId {config_id}: {error_details}")
+                    raise ValueError(f"Invalid configuration structure for orgId: {org_id}, configId: {config_id}. Error: {error_details}")
         
         except Exception as e:
             logger.error(f"Unexpected error loading configuration: {str(e)}")
