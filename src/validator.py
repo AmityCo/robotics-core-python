@@ -146,8 +146,23 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
 
     response_text = gemini_data["candidates"][0]["content"]["parts"][0]["text"]
 
+    # Clean the response text by removing markdown code block formatting
+    cleaned_response = response_text.strip()
+    
+    # Remove opening markdown tags
+    if cleaned_response.startswith("```json"):
+        cleaned_response = cleaned_response[7:]  # Remove ```json
+    elif cleaned_response.startswith("```"):
+        cleaned_response = cleaned_response[3:]   # Remove ``` (in case it's just ```)
+    
+    # Remove closing markdown tags
+    if cleaned_response.endswith("```"):
+        cleaned_response = cleaned_response[:-3]  # Remove closing ```
+    
+    cleaned_response = cleaned_response.strip()
+
     try:
-        validation_result = json.loads(response_text)
+        validation_result = json.loads(cleaned_response)
         if "correction" not in validation_result:
             raise ValueError("Invalid response format: missing correction field")
 

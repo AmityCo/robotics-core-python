@@ -185,6 +185,8 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
         .replace(/<\/s>/g, '')
         // Remove [meta:docs] content
         .replace(/\[meta:docs\].*$/, '')
+        // Remove {#NXENDX#} markers
+        .replace(/\{#NXENDX#\}/g, '')
         // Fix common UTF-8 encoding issues for Thai characters
         .replace(/Ã /g, 'อ')
         .replace(/Ã¸/g, 'อ')
@@ -212,6 +214,7 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
       return content
         .replace(/<\/s>/g, '')
         .replace(/\[meta:docs\].*$/, '')
+        .replace(/\{#NXENDX#\}/g, '')
         .trim();
     }
   };
@@ -325,6 +328,8 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
         return 'bg-orange-50 border-orange-200';
       case 'complete':
         return 'bg-green-100 border-green-300';
+      case 'session_end':
+        return 'bg-red-50 border-red-200';
       default:
         return 'bg-blue-50 border-blue-200';
     }
