@@ -502,6 +502,22 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                 
                 # Handle answer section
                 elif current_section == "answer":
+                    # Check for {#NXENDX#} marker first
+                    if "{#NXENDX#}" in chunk:
+                        # Process content before the marker
+                        nxend_index = chunk.find("{#NXENDX#}")
+                        content_before_nxend = pending_bracket_buffer + chunk[:nxend_index]
+                        
+                        if content_before_nxend.strip():
+                            send_answer_chunk(content_before_nxend.strip())
+                        
+                        # Send SESSION_END status
+                        sse_handler.send('status', message=SSEStatus.SESSION_ENDED)
+                        logger.info("SESSION_ENDED status sent due to {#NXENDX#} marker found in answer section")
+                        current_section = "session_end"
+                        pending_bracket_buffer = ""
+                        continue
+                    
                     # Handle any pending bracket buffer first
                     content_to_process = pending_bracket_buffer + chunk
                     pending_bracket_buffer = ""
@@ -545,11 +561,28 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                 # Handle metadata section
                 elif current_section == "metadata":
                     metadata_content += chunk
+                
+                # Handle session end section - skip all remaining content
+                elif current_section == "session_end":
+                    continue
             
             # Handle any remaining pending bracket buffer
             if pending_bracket_buffer.strip():
-                # If we have pending bracket content, treat it as answer content
-                send_answer_chunk(pending_bracket_buffer.strip())
+                # Check for {#NXENDX#} in pending content
+                if "{#NXENDX#}" in pending_bracket_buffer:
+                    # Send content before the marker
+                    nxend_index = pending_bracket_buffer.find("{#NXENDX#}")
+                    content_before_nxend = pending_bracket_buffer[:nxend_index]
+                    
+                    if content_before_nxend.strip():
+                        send_answer_chunk(content_before_nxend.strip())
+                    
+                    # Send SESSION_END status
+                    sse_handler.send('status', message=SSEStatus.SESSION_ENDED)
+                    logger.info("SESSION_ENDED status sent due to {#NXENDX#} marker found in pending buffer")
+                else:
+                    # If we have pending bracket content, treat it as answer content
+                    send_answer_chunk(pending_bracket_buffer.strip())
             
             # Send metadata if we collected any
             if metadata_content.strip():
@@ -558,17 +591,64 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                     if json_match:
                         metadata_json = json.loads(json_match.group())
                         
-                        # Extract relevant data from KM results based on metadata doc-ids
-                        relevant_data = extract_relevant_km_data(metadata_json, km_result)
-                        
-                        # Send the simplified relevant data object directly
-                        sse_handler.send('metadata', data=relevant_data)
-                        logger.info(f"Sent simplified metadata with {len(relevant_data.get('items', []))} relevant data items")
+                        # Check if metadata has the expected doc-ids key
+                        if 'doc-ids' in metadata_json:
+                            # Extract relevant data from KM results based on metadata doc-ids
+                            relevant_data = extract_relevant_km_data(metadata_json, km_result)
+                            
+                            # Send the simplified relevant data object directly
+                            sse_handler.send('metadata', data=relevant_data)
+                            logger.info(f"Sent simplified metadata with {len(relevant_data.get('items', []))} relevant data items")
+                        else:
+                            # Try to extract doc IDs from any string values in the JSON
+                            doc_ids = []
+                            for key, value in metadata_json.items():
+                                if isinstance(value, str):
+                                    # Look for doc-like patterns in the string
+                                    doc_matches = re.findall(r'doc[-_]?\w+', value)
+                                    doc_ids.extend(doc_matches)
+                            
+                            if doc_ids:
+                                # Create a normalized metadata format
+                                normalized_metadata = {'doc-ids': ','.join(doc_ids)}
+                                relevant_data = extract_relevant_km_data(normalized_metadata, km_result)
+                                sse_handler.send('metadata', data=relevant_data)
+                                logger.info(f"Sent metadata with extracted doc-ids from malformed JSON: {doc_ids}")
+                            else:
+                                # No doc IDs found, send raw metadata
+                                sse_handler.send('metadata', data={'raw': metadata_content.strip()})
+                                logger.info("No doc-ids found in metadata JSON, sent raw content")
                     else:
-                        # If no JSON found, send raw metadata content
+                        # No JSON found, try to extract doc IDs from raw text
+                        doc_matches = re.findall(r'doc[-_]?\w+', metadata_content)
+                        if doc_matches:
+                            # Create metadata format from extracted doc IDs
+                            normalized_metadata = {'doc-ids': ','.join(doc_matches)}
+                            relevant_data = extract_relevant_km_data(normalized_metadata, km_result)
+                            sse_handler.send('metadata', data=relevant_data)
+                            logger.info(f"Sent metadata with doc-ids extracted from raw text: {doc_matches}")
+                        else:
+                            # Send raw metadata content as fallback
+                            sse_handler.send('metadata', data={'raw': metadata_content.strip()})
+                            logger.info("No doc-ids found in raw metadata, sent raw content")
+                except json.JSONDecodeError as e:
+                    # Try to extract doc IDs from the raw content even if JSON parsing failed
+                    doc_matches = re.findall(r'doc[-_]?\w+', metadata_content)
+                    if doc_matches:
+                        # Create metadata format from extracted doc IDs
+                        normalized_metadata = {'doc-ids': ','.join(doc_matches)}
+                        relevant_data = extract_relevant_km_data(normalized_metadata, km_result)
+                        sse_handler.send('metadata', data=relevant_data)
+                        logger.info(f"Sent metadata with doc-ids extracted from malformed JSON: {doc_matches}")
+                    else:
+                        # Send raw metadata content as final fallback
                         sse_handler.send('metadata', data={'raw': metadata_content.strip()})
-                except json.JSONDecodeError:
-                    sse_handler.send('metadata', data={'raw': metadata_content.strip()})
+                        logger.info("Failed to parse JSON and extract doc-ids, sent raw content")
+            
+            # Check for {#NXENDX#} after metadata and send SESSION_ENDED
+            if metadata_content and "{#NXENDX#}" in metadata_content:
+                sse_handler.send('status', message=SSEStatus.SESSION_ENDED)
+                logger.info("SESSION_ENDED status sent due to {#NXENDX#} marker found after metadata")
             
             logger.info("Streaming answer generation completed")
             
