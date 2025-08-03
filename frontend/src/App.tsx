@@ -50,6 +50,10 @@ const App: React.FC = () => {
   const [processingMode, setProcessingMode] = useState<'normal' | 'keywords' | 'text-only'>(() => {
     return (localStorage.getItem('arc2_processing_mode') as 'normal' | 'keywords' | 'text-only') || 'text-only';
   });
+  const [transcriptConfidence, setTranscriptConfidence] = useState<number>(() => {
+    const saved = localStorage.getItem('arc2_transcript_confidence');
+    return saved ? parseFloat(saved) : 0.95;
+  });
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [base64Audio, setBase64Audio] = useState<string>('');
@@ -107,6 +111,10 @@ const App: React.FC = () => {
     }
   }, [processingMode, base64Audio]);
 
+  useEffect(() => {
+    localStorage.setItem('arc2_transcript_confidence', transcriptConfidence.toString());
+  }, [transcriptConfidence]);
+
   // Save API URL to localStorage whenever it changes
   useEffect(() => {
     localStorage.setItem('arc2_api_url', apiUrl);
@@ -151,6 +159,11 @@ const App: React.FC = () => {
       config_id: configId.trim(),
       chat_history: chatHistory
     };
+
+    // Add transcript confidence if it's not the default value
+    if (transcriptConfidence !== 0.95) {
+      requestData.transcript_confidence = transcriptConfidence;
+    }
 
     // Add optional fields based on mode
     if (processingMode === 'normal') {
@@ -256,6 +269,7 @@ const App: React.FC = () => {
       setChatHistory([]);
       setKeywords([]);
       setProcessingMode('text-only');
+      setTranscriptConfidence(0.95);
       setBase64Audio('');
       setVideoFile(null);
       setApiUrl('http://localhost:8000');
@@ -271,6 +285,7 @@ const App: React.FC = () => {
       localStorage.removeItem('arc2_chat_history');
       localStorage.removeItem('arc2_keywords');
       localStorage.removeItem('arc2_processing_mode');
+      localStorage.removeItem('arc2_transcript_confidence');
       localStorage.removeItem('arc2_api_url');
       localStorage.removeItem('arc2_audio_url');
       localStorage.removeItem('arc2_silence_threshold');
@@ -480,6 +495,36 @@ const App: React.FC = () => {
                     )}
 
                     <TranscriptInput value={transcript} onChange={setTranscript} />
+
+                    {/* Transcript Confidence Input */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Transcript Confidence ({transcriptConfidence})
+                      </label>
+                      <div className="flex items-center space-x-4">
+                        <input
+                          type="range"
+                          min="0.1"
+                          max="1.0"
+                          step="0.05"
+                          value={transcriptConfidence}
+                          onChange={(e) => setTranscriptConfidence(parseFloat(e.target.value))}
+                          className="flex-1"
+                        />
+                        <input
+                          type="number"
+                          min="0.1"
+                          max="1.0"
+                          step="0.05"
+                          value={transcriptConfidence}
+                          onChange={(e) => setTranscriptConfidence(parseFloat(e.target.value))}
+                          className="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
+                        />
+                      </div>
+                      <p className="mt-1 text-sm text-gray-500">
+                        Confidence level for transcript validation. If below organization threshold, placeholder text will be used instead.
+                      </p>
+                    </div>
 
                     {processingMode === 'keywords' && (
                       <KeywordsInput 

@@ -24,6 +24,7 @@ export interface AnswerRequest {
   config_id: string;
   chat_history?: ChatMessage[];
   keywords?: string[];    // Optional - skip validation if provided
+  transcript_confidence?: number; // Optional - confidence level for transcript validation
 }
 
 // Local Storage Types

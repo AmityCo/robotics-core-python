@@ -173,6 +173,57 @@ async def get_validation_prompts_from_org_config(org_config, language: str):
     
     return validation_system_prompt, validation_user_prompt, validator_model
 
+def trim_audio_if_enabled(org_config, base64_audio: Optional[str]) -> Optional[str]:
+    """
+    Trim audio silence if auto_trim_silent flag is enabled in organization config.
+    
+    Args:
+        org_config: Organization configuration containing audio settings
+        base64_audio: Base64 encoded audio data (optional)
+        
+    Returns:
+        Trimmed base64 audio data if trimming is enabled, otherwise original audio
+    """
+    if not base64_audio:
+        return base64_audio
+    
+    try:
+        # Check if auto trimming is enabled in config
+        auto_trim_enabled = getattr(org_config.audio, 'auto_trim_silent', False)
+        
+        if not auto_trim_enabled:
+            logger.debug("Audio auto trimming is disabled in organization config")
+            return base64_audio
+        
+        logger.info("Auto trim silent audio is enabled - processing audio")
+        
+        # Decode base64 audio data
+        audio_data = base64.b64decode(base64_audio)
+        
+        # Create audio processor and trim silence
+        audio_processor = AudioProcessor(silence_threshold=0.05, enable_trimming=True)
+        trimmed_audio_data = audio_processor.trim_silence(audio_data)
+        
+        # Re-encode to base64
+        trimmed_base64_audio = base64.b64encode(trimmed_audio_data).decode('utf-8')
+        
+        # Log trimming results
+        original_size = len(audio_data)
+        trimmed_size = len(trimmed_audio_data)
+        size_reduction = original_size - trimmed_size
+        size_reduction_percent = (size_reduction / original_size) * 100 if original_size > 0 else 0
+        
+        logger.info(f"Audio trimming completed: {original_size} bytes -> {trimmed_size} bytes "
+                   f"(reduced by {size_reduction} bytes, {size_reduction_percent:.1f}%)")
+        
+        return trimmed_base64_audio
+        
+    except Exception as e:
+        logger.error(f"Error trimming audio: {str(e)}")
+        logger.info("Returning original audio data due to trimming error")
+        return base64_audio
+
+
 
 async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None):
     """

@@ -9,6 +9,7 @@ AI-powered answer generation system with real-time progress updates via Server-S
 - **Standardized Status Messages**: Consistent status reporting via SSEStatus enum
 - **Flexible Input**: Supports audio-based, text-only, and direct keyword input
 - **Skip Validation**: Optional keywords parameter to bypass validation step
+- **Transcript Confidence**: Configurable confidence thresholds for robust validation
 - **Organization Configuration**: Dynamic config from DynamoDB
 - **Multiple AI Models**: Gemini for validation, OpenAI for generation
 - **Knowledge Management**: Integration with Amity Solutions KM API
@@ -89,7 +90,8 @@ The SSE API now supports three input modes:
   "org_id": "string",                 // Required: Organization ID
   "config_id": "string",              // Required: Configuration ID
   "chat_history": [],                 // Optional: Previous conversation
-  "keywords": ["string"] | null       // Optional: Skip validation if provided
+  "keywords": ["string"] | null,      // Optional: Skip validation if provided
+  "transcript_confidence": "number"   // Optional: Transcript confidence (0.0-1.0)
 }
 ```
 
@@ -137,6 +139,62 @@ The SSE API now supports three input modes:
   "keywords": []
 }
 ```
+
+#### 5. Transcript with Confidence Score
+```json
+{
+  "transcript": "What is the weather like today?",
+  "transcript_confidence": 0.95,
+  "language": "en-US",
+  "org_id": "my-org",
+  "config_id": "my-config"
+}
+```
+
+### Transcript Confidence Threshold ✨ NEW
+
+The system now supports transcript confidence-based validation control. When `transcript_confidence` is provided and falls below configured thresholds, the transcript is replaced with a placeholder during validation.
+
+#### Configuration
+
+Configure confidence thresholds in your organization settings:
+
+**LocalizationConfig** (per-language, higher priority):
+```json
+{
+  "language": "en-US",
+  "validatorTranscriptConfidenceThreshold": 0.8,
+  // ... other localization settings
+}
+```
+
+**GeminiConfig** (global fallback):
+```json
+{
+  "validatorTranscriptConfidenceThreshold": 0.7,
+  // ... other gemini settings
+}
+```
+
+#### Behavior
+
+- **Above threshold**: Original transcript is used for validation
+- **Below threshold**: Transcript is replaced with `"<transcript not available>"` during validation
+- **No threshold set**: Transcript confidence is ignored (normal processing)
+
+#### Example with Low Confidence
+
+```json
+{
+  "transcript": "Where is McDonald's",
+  "transcript_confidence": 0.3,
+  "language": "en-US",
+  "org_id": "my-org",
+  "config_id": "my-config"
+}
+```
+
+If the threshold is set to 0.7, the validator will receive `"<transcript not available>"` instead of the unclear transcript, allowing for more robust validation handling.
 
 ### Performance Benefits
 
@@ -204,7 +262,7 @@ The `/api/v1/answer-sse` endpoint provides real-time progress updates via Server
 import requests
 import json
 
-def handle_sse_response(transcript, language, org_id, base64_audio=None, keywords=None):
+def handle_sse_response(transcript, language, org_id, base64_audio=None, keywords=None, transcript_confidence=None):
     payload = {
         "transcript": transcript,
         "language": language,
@@ -216,6 +274,8 @@ def handle_sse_response(transcript, language, org_id, base64_audio=None, keyword
         payload["base64_audio"] = base64_audio
     if keywords is not None:  # Allow empty list
         payload["keywords"] = keywords
+    if transcript_confidence is not None:
+        payload["transcript_confidence"] = transcript_confidence
     
     response = requests.post(
         "http://localhost:8000/api/v1/answer-sse",
