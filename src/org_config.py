@@ -31,12 +31,14 @@ class LocalizationConfig(BaseModel):
     validatorTranscriptPromptTemplateUrl: Optional[str] = None
     validatorSystemPromptTemplateUrl: Optional[str] = None
     validatorModel: Optional[str] = None
+    validatorTranscriptConfidenceThreshold: Optional[float] = None
 
 class GeminiConfig(BaseModel):
     key: str
     validatorEnabled: bool
     validatorTranscriptPromptTemplateUrl: Optional[str] = None
     validatorSystemPromptTemplateUrl: Optional[str] = None
+    validatorTranscriptConfidenceThreshold: Optional[float] = None
 
 class OpenAIConfig(BaseModel):
     apiKey: str

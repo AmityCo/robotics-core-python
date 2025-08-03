@@ -174,58 +174,7 @@ async def get_validation_prompts_from_org_config(org_config, language: str):
     return validation_system_prompt, validation_user_prompt, validator_model
 
 
-def trim_audio_if_enabled(org_config, base64_audio: Optional[str]) -> Optional[str]:
-    """
-    Trim audio silence if auto_trim_silent flag is enabled in organization config.
-    
-    Args:
-        org_config: Organization configuration containing audio settings
-        base64_audio: Base64 encoded audio data (optional)
-        
-    Returns:
-        Trimmed base64 audio data if trimming is enabled, otherwise original audio
-    """
-    if not base64_audio:
-        return base64_audio
-    
-    try:
-        # Check if auto trimming is enabled in config
-        auto_trim_enabled = getattr(org_config.audio, 'auto_trim_silent', False)
-        
-        if not auto_trim_enabled:
-            logger.debug("Audio auto trimming is disabled in organization config")
-            return base64_audio
-        
-        logger.info("Auto trim silent audio is enabled - processing audio")
-        
-        # Decode base64 audio data
-        audio_data = base64.b64decode(base64_audio)
-        
-        # Create audio processor and trim silence
-        audio_processor = AudioProcessor(silence_threshold=0.05, enable_trimming=True)
-        trimmed_audio_data = audio_processor.trim_silence(audio_data)
-        
-        # Re-encode to base64
-        trimmed_base64_audio = base64.b64encode(trimmed_audio_data).decode('utf-8')
-        
-        # Log trimming results
-        original_size = len(audio_data)
-        trimmed_size = len(trimmed_audio_data)
-        size_reduction = original_size - trimmed_size
-        size_reduction_percent = (size_reduction / original_size) * 100 if original_size > 0 else 0
-        
-        logger.info(f"Audio trimming completed: {original_size} bytes -> {trimmed_size} bytes "
-                   f"(reduced by {size_reduction} bytes, {size_reduction_percent:.1f}%)")
-        
-        return trimmed_base64_audio
-        
-    except Exception as e:
-        logger.error(f"Error trimming audio: {str(e)}")
-        logger.info("Returning original audio data due to trimming error")
-        return base64_audio
-
-
-async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None):
+async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None):
     """
     Background worker function that executes the answer pipeline.
     Uses SSEHandler to send messages back to the main thread.
@@ -313,9 +262,32 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             except Exception as e:
                 logger.warning(f"Failed to generate processing TTS: {str(e)}")
             
+            # Check transcript confidence threshold
+            validation_transcript = transcript
+            if transcript_confidence is not None:
+                # Get confidence threshold from localization config (higher priority) or gemini config
+                confidence_threshold = None
+                
+                # First try to get from localization config for the current language
+                for localization in org_config.localization:
+                    if localization.language == language and localization.validatorTranscriptConfidenceThreshold is not None:
+                        confidence_threshold = localization.validatorTranscriptConfidenceThreshold
+                        break
+                
+                # Fallback to gemini config if not found in localization
+                if confidence_threshold is None and org_config.gemini.validatorTranscriptConfidenceThreshold is not None:
+                    confidence_threshold = org_config.gemini.validatorTranscriptConfidenceThreshold
+                
+                # Apply threshold check if configured
+                if confidence_threshold is not None and transcript_confidence < confidence_threshold:
+                    validation_transcript = "<transcript not available>"
+                    logger.info(f"Transcript confidence {transcript_confidence} below threshold {confidence_threshold}, using placeholder")
+                else:
+                    logger.info(f"Transcript confidence {transcript_confidence} meets threshold {confidence_threshold}, using original transcript")
+            
             # Step 1: Perform Gemini validation using the refactored validator
             validator_request = GeminiValidationRequest(
-                transcript=transcript,
+                transcript=validation_transcript,
                 language=language,
                 base64_audio=base64_audio,  # This can now be None for text-only validation
                 validation_system_prompt=validation_system_prompt,
@@ -711,14 +683,14 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             sse_handler.mark_component_complete('tts_processing')
 
 
-def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None):
+def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None):
     """
     Synchronous wrapper for the async background function
     """
-    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords))
+    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords, transcript_confidence))
 
 
-def execute_answer_flow_sse(transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage] = None, keywords: Optional[List[str]] = None) -> Generator[str, None, None]:
+def execute_answer_flow_sse(transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage] = None, keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None) -> Generator[str, None, None]:
     """
     Execute the complete answer pipeline with Server-Sent Events.
     Validates with Gemini, searches KM, then generates answer with OpenAI GPT.
@@ -735,6 +707,7 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: Option
         config_id: Configuration ID within the organization
         chat_history: Previous conversation history (optional)
         keywords: If provided, skip validation and use these keywords directly (optional)
+        transcript_confidence: Confidence score of the transcript (optional)
         
     Yields:
         SSE formatted strings containing progress updates and results
@@ -748,7 +721,7 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: Option
     # Start the background thread to execute the pipeline
     pipeline_thread = threading.Thread(
         target=_execute_answer_pipeline_sync_wrapper,
-        args=(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords),
+        args=(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords, transcript_confidence),
         daemon=True
     )
     pipeline_thread.start()
