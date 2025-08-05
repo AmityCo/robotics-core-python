@@ -27,6 +27,7 @@ class AppConfig:
     GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
     OPENAI_API_BASE_URL = "https://api.openai.com/v1"
     AMITY_KM_API_URL = "https://api.amitysolutions.com/api/v1/km/search"
+    QUICKREPLY_API_URL = os.getenv("QUICKREPLY_API_URL", "https://api.amityrobotics.com/v1/quickreplies/query")
     
     # AWS settings
     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
