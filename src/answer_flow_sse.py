@@ -781,7 +781,16 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: Option
     
     # Create SSE handler
     sse_handler = SSEHandler()
-    
+    logger.info("Executing answer flow with SSE with parameters: %s", {
+        "transcript": transcript,
+        "language": language,
+        "org_id": org_id,
+        "config_id": config_id,
+        "chat_history": chat_history,
+        "keywords": keywords,
+        "transcript_confidence": transcript_confidence,
+        "generate_answer": generate_answer
+    })
     # Start the background thread to execute the pipeline
     pipeline_thread = threading.Thread(
         target=_execute_answer_pipeline_sync_wrapper,
