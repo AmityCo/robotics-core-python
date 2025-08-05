@@ -96,19 +96,19 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
         "safetySettings": [
             {
                 "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+                "threshold": "OFF",
             },
             {
                 "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+                "threshold": "OFF",
             },
             {
                 "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+                "threshold": "OFF",
             },
             {
                 "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+                "threshold": "OFF",
             },
         ],
     }
@@ -142,7 +142,7 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
         .get("parts", [{}])[0]
         .get("text")
     ):
-        raise ValueError("No response from Gemini validator")
+        raise ValueError("No response from Gemini validator: ", gemini_data)
 
     response_text = gemini_data["candidates"][0]["content"]["parts"][0]["text"]
 
