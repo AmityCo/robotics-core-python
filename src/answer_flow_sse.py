@@ -333,8 +333,20 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                         except Exception as e:
                             logger.warning(f"Failed to add text to TTS streamer: {str(e)}")
             
-            # Send the script content
-            send_answer_chunk(script_content)
+            # Check if script content contains <break/> tags for chunking (same as existing flow)
+            if '<break/>' in script_content:
+                # Split by <break/> and send each chunk separately
+                chunks = script_content.split('<break/>')
+                logger.info(f"Splitting quickreply script into {len(chunks)} chunks using <break/> delimiter")
+                
+                for i, chunk in enumerate(chunks):
+                    if chunk.strip():  # Only send non-empty chunks                        
+                        chunk_content = chunk.strip()                        
+                        send_answer_chunk(chunk_content)
+                        logger.debug(f"Sent quickreply chunk {i+1}/{len(chunks)}: '{chunk_content[:50]}...'")
+            else:
+                # Send the script content as a single chunk if no <break/> tags
+                send_answer_chunk(script_content)
             
             # TODO: If quickreply_result contains metadata, send it to the client in the future.
             
