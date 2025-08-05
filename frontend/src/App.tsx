@@ -54,6 +54,10 @@ const App: React.FC = () => {
     const saved = localStorage.getItem('arc2_transcript_confidence');
     return saved ? parseFloat(saved) : 0.95;
   });
+  const [generateAnswer, setGenerateAnswer] = useState<boolean>(() => {
+    const saved = localStorage.getItem('arc2_generate_answer');
+    return saved ? JSON.parse(saved) : true;
+  });
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [base64Audio, setBase64Audio] = useState<string>('');
@@ -115,6 +119,10 @@ const App: React.FC = () => {
     localStorage.setItem('arc2_transcript_confidence', transcriptConfidence.toString());
   }, [transcriptConfidence]);
 
+  useEffect(() => {
+    localStorage.setItem('arc2_generate_answer', JSON.stringify(generateAnswer));
+  }, [generateAnswer]);
+
   // Save API URL to localStorage whenever it changes
   useEffect(() => {
     localStorage.setItem('arc2_api_url', apiUrl);
@@ -164,6 +172,9 @@ const App: React.FC = () => {
     if (transcriptConfidence !== 0.95) {
       requestData.transcript_confidence = transcriptConfidence;
     }
+
+    // Add generate_answer option
+    requestData.generate_answer = generateAnswer;
 
     // Add optional fields based on mode
     if (processingMode === 'normal') {
@@ -270,6 +281,7 @@ const App: React.FC = () => {
       setKeywords([]);
       setProcessingMode('text-only');
       setTranscriptConfidence(0.95);
+      setGenerateAnswer(true);
       setBase64Audio('');
       setVideoFile(null);
       setApiUrl('http://localhost:8000');
@@ -286,6 +298,7 @@ const App: React.FC = () => {
       localStorage.removeItem('arc2_keywords');
       localStorage.removeItem('arc2_processing_mode');
       localStorage.removeItem('arc2_transcript_confidence');
+      localStorage.removeItem('arc2_generate_answer');
       localStorage.removeItem('arc2_api_url');
       localStorage.removeItem('arc2_audio_url');
       localStorage.removeItem('arc2_silence_threshold');
@@ -526,6 +539,34 @@ const App: React.FC = () => {
                       </p>
                     </div>
 
+                    {/* Generate Answer Toggle */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Generate Answer
+                      </label>
+                      <div className="flex items-center space-x-3">
+                        <button
+                          type="button"
+                          onClick={() => setGenerateAnswer(!generateAnswer)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${
+                            generateAnswer ? 'bg-primary-600' : 'bg-gray-200'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              generateAnswer ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                        <span className="text-sm text-gray-700">
+                          {generateAnswer ? 'Full pipeline (validation → KM search → answer generation)' : 'Stop after KM search (validation → KM search only)'}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-sm text-gray-500">
+                        When disabled, the pipeline will end after KM search results are returned, skipping answer generation.
+                      </p>
+                    </div>
+
                     {processingMode === 'keywords' && (
                       <KeywordsInput 
                         value={keywords}
@@ -634,6 +675,14 @@ const App: React.FC = () => {
                     }`}>
                       {processingMode === 'keywords' ? 'Keywords (Skip Validation)' : 
                        processingMode === 'text-only' ? 'Text Only' : 'Normal (Audio + Text)'}
+                    </span>
+                    <span className="text-sm font-medium text-gray-700">Pipeline:</span>
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                      generateAnswer 
+                        ? 'bg-green-100 text-green-800' 
+                        : 'bg-orange-100 text-orange-800'
+                    }`}>
+                      {generateAnswer ? 'Full (KM + Answer)' : 'KM Search Only'}
                     </span>
                   </div>
                   <div className="text-sm text-gray-500">
