@@ -25,6 +25,7 @@ export interface AnswerRequest {
   chat_history?: ChatMessage[];
   keywords?: string[];    // Optional - skip validation if provided
   transcript_confidence?: number; // Optional - confidence level for transcript validation
+  generate_answer?: boolean; // Optional - if false, end flow after KM search (default: true)
 }
 
 // Local Storage Types

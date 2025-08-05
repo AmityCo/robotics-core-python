@@ -15,7 +15,7 @@ interface SSEEventSource {
 }
 
 export const sendSSERequest = async (requestData: AnswerRequest, apiBaseUrl: string): Promise<SSEEventSource> => {
-  const { transcript, language, base64_audio, org_id, config_id, chat_history, keywords } = requestData;
+  const { transcript, language, base64_audio, org_id, config_id, chat_history, keywords, transcript_confidence, generate_answer } = requestData;
 
   // Validate required fields (base64_audio is now optional)
   if (!transcript || !org_id || !config_id) {
@@ -42,7 +42,9 @@ export const sendSSERequest = async (requestData: AnswerRequest, apiBaseUrl: str
         org_id,
         config_id,
         chat_history: chat_history || [],
-        ...(keywords !== undefined && { keywords })  // Include keywords if provided (even if empty array)
+        ...(keywords !== undefined && { keywords }),  // Include keywords if provided (even if empty array)
+        ...(transcript_confidence !== undefined && { transcript_confidence }), // Include transcript_confidence if provided
+        ...(generate_answer !== undefined && { generate_answer }) // Include generate_answer if provided
       })
     });
 

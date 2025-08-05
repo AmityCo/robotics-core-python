@@ -225,12 +225,13 @@ def trim_audio_if_enabled(org_config, base64_audio: Optional[str]) -> Optional[s
 
 
 
-async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None):
+async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None, generate_answer: bool = True):
     """
     Background worker function that executes the answer pipeline.
     Uses SSEHandler to send messages back to the main thread.
     Supports both audio-based and text-only validation.
     If keywords are provided, validation step is skipped.
+    If generate_answer is False, the pipeline ends after KM search results are returned.
     """
     try:
         # Send initial status
@@ -423,6 +424,17 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
 
         # Send KM search result
         sse_handler.send('km_result', data=km_result.dict())
+
+        # Check if we should skip answer generation
+        if not generate_answer:
+            logger.info("Skipping answer generation as generate_answer is False")
+            sse_handler.send('status', message=SSEStatus.COMPLETE)
+            # Mark components as complete to properly end the flow
+            if 'text_generation' in sse_handler._completion_registry:
+                sse_handler.mark_component_complete('text_generation')
+            if 'tts_processing' in sse_handler._completion_registry:
+                sse_handler.mark_component_complete('tts_processing')
+            return
 
         # Send answer generation start status
         sse_handler.send('status', message=SSEStatus.GENERATING_ANSWER)
@@ -734,14 +746,14 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             sse_handler.mark_component_complete('tts_processing')
 
 
-def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None):
+def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None, generate_answer: bool = True):
     """
     Synchronous wrapper for the async background function
     """
-    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords, transcript_confidence))
+    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords, transcript_confidence, generate_answer))
 
 
-def execute_answer_flow_sse(transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage] = None, keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None) -> Generator[str, None, None]:
+def execute_answer_flow_sse(transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage] = None, keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None, generate_answer: bool = True) -> Generator[str, None, None]:
     """
     Execute the complete answer pipeline with Server-Sent Events.
     Validates with Gemini, searches KM, then generates answer with OpenAI GPT.
@@ -759,6 +771,7 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: Option
         chat_history: Previous conversation history (optional)
         keywords: If provided, skip validation and use these keywords directly (optional)
         transcript_confidence: Confidence score of the transcript (optional)
+        generate_answer: If False, end flow after KM search results are returned (optional, default True)
         
     Yields:
         SSE formatted strings containing progress updates and results
@@ -772,7 +785,7 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: Option
     # Start the background thread to execute the pipeline
     pipeline_thread = threading.Thread(
         target=_execute_answer_pipeline_sync_wrapper,
-        args=(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords, transcript_confidence),
+        args=(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords, transcript_confidence, generate_answer),
         daemon=True
     )
     pipeline_thread.start()

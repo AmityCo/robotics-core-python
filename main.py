@@ -43,12 +43,13 @@ app.add_middleware(
 class AnswerRequest(BaseModel):
     transcript: str
     language: str
+    transcript_confidence: Optional[float] = None  # Confidence level for transcript validation
     base64_audio: Optional[str] = None  # Made optional to support text-only requests
     org_id: str  # Organization ID (partition key)
     config_id: str  # Configuration ID within the organization
     chat_history: List[ChatMessage] = []  # Previous conversation history
     keywords: Optional[List[str]] = None  # If provided, skip validation and use directly
-
+    generate_answer: bool = True  # If set to false, end flow after KM search
 class AudioTrimRequest(BaseModel):
     audio_url: HttpUrl
     silence_threshold: Optional[float] = 0.05  # Energy threshold for silence detection (0.05 = 5% of max energy)
@@ -77,6 +78,7 @@ async def answer_sse(request: AnswerRequest):
     Sends data stage by stage via SSE for real-time progress updates
     Supports both audio-based and text-only requests (when base64_audio is not provided)
     If keywords are provided directly, validation step is skipped
+    If generate_answer is False, flow ends after KM search results are returned
     """
     return StreamingResponse(
         execute_answer_flow_sse(
@@ -86,7 +88,9 @@ async def answer_sse(request: AnswerRequest):
             org_id=request.org_id,
             config_id=request.config_id,
             chat_history=request.chat_history or [],
-            keywords=request.keywords
+            keywords=request.keywords,
+            generate_answer=request.generate_answer,
+            transcript_confidence=request.transcript_confidence
         ),
         media_type="text/event-stream",
         headers={
