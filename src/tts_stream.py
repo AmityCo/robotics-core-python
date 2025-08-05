@@ -81,6 +81,52 @@ class SSMLFormatter:
         
         return transformed
     
+    def _replace_illegal_characters(self, text: str) -> str:
+        """
+        Replace special characters that might cause issues with TTS
+        Based on Kotlin implementation
+        
+        Args:
+            text: Input text to clean
+            
+        Returns:
+            Text with illegal characters replaced
+        """
+        return (text.replace("&", " and ")
+                   .replace("<", "")
+                   .replace(">", "")
+                   .replace("\"", "")
+                   .replace("'", "")
+                   .replace("\\n", " ")  # Newline escape sequence
+                   .replace("\\t", " ")  # Tab escape sequence
+                   .replace("\\r", " ")  # Carriage return escape sequence
+                   .replace("\\b", " ")  # Backspace escape sequence
+                   .replace("\\f", " ")  # Form feed escape sequence
+                   .replace("\\v", " ")  # Vertical tab escape sequence
+                   .replace("\\\\", " ")  # Literal backslash
+                   .replace("!", " ")
+                   .replace("?", " ")
+                   .replace(";", " ")
+                   .replace(":", " ")
+                   .replace("#", " number ")
+                   .replace("@", " at ")
+                   .replace("%", " percent ")
+                   .replace("*", " star ")
+                   .replace("(", " ")
+                   .replace(")", " ")
+                   .replace("[", " ")
+                   .replace("]", " ")
+                   .replace("{", " ")
+                   .replace("}", " ")
+                   .replace("`", "")
+                   .replace("~", " ")
+                   .replace("^", " ")
+                   .replace("+", " plus ")
+                   .replace("=", " equals ")
+                   .replace("|", " ")
+                   .replace("/", " ")
+                   .strip())
+    
     def transform_with_phonemes(self, text: str, language: str) -> str:
         """
         Transform text by applying phoneme substitutions
@@ -124,6 +170,9 @@ class SSMLFormatter:
                     return match.group(0)
             
             current_text = pattern.sub(replace_func, current_text)
+        
+        # Replace illegal characters before returning
+        current_text = self._replace_illegal_characters(current_text)
         
         return current_text
     
