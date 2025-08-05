@@ -142,6 +142,10 @@ class SSMLFormatter:
         if not text or not text.strip():
             return text
         
+        
+        # Replace illegal characters before returning
+        text = self._replace_illegal_characters(text)
+        
         language_lower = language.lower()
         
         # Use pre-compiled patterns if available
@@ -170,9 +174,6 @@ class SSMLFormatter:
                     return match.group(0)
             
             current_text = pattern.sub(replace_func, current_text)
-        
-        # Replace illegal characters before returning
-        current_text = self._replace_illegal_characters(current_text)
         
         return current_text
     
