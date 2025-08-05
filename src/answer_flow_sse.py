@@ -348,9 +348,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                 # Send the script content as a single chunk if no <break/> tags
                 send_answer_chunk(script_content)
             
-            # Send metadata if present
-            #if quickreply_result.get('metadata'):
-            #sse_handler.send('metadata', data=quickreply_result['metadata'])
+            # TODO: If quickreply_result contains metadata, send it to the client in the future.
             
             # Flush TTS and complete
             if tts_streamer:
