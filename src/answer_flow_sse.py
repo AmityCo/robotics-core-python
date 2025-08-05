@@ -340,15 +340,20 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                 logger.info(f"Splitting quickreply script into {len(chunks)} chunks using <break/> delimiter")
                 
                 for i, chunk in enumerate(chunks):
-                    if chunk.strip():  # Only send non-empty chunks                        
-                        chunk_content = chunk.strip()                        
+                    if chunk.strip():  # Only send non-empty chunks
+                        # Add <break/> back to all chunks except the last one to maintain TTS behavior
+                        chunk_content = chunk.strip()
+                        if i < len(chunks) - 1:  # Not the last chunk
+                            chunk_content += '<break/>'
                         send_answer_chunk(chunk_content)
                         logger.debug(f"Sent quickreply chunk {i+1}/{len(chunks)}: '{chunk_content[:50]}...'")
             else:
                 # Send the script content as a single chunk if no <break/> tags
                 send_answer_chunk(script_content)
             
-            # TODO: If quickreply_result contains metadata, send it to the client in the future.
+            # Send metadata if present
+            #if quickreply_result.get('metadata'):
+            #sse_handler.send('metadata', data=quickreply_result['metadata'])
             
             # Flush TTS and complete
             if tts_streamer:
