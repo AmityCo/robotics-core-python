@@ -10,6 +10,7 @@ import re
 import asyncio
 import os
 import random
+import requests
 from typing import Generator, Dict, List, Optional
 from requests import RequestException
 
@@ -276,6 +277,88 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         except Exception as e:
             logger.warning(f"Failed to initialize TTS streamer: {str(e)}")
             tts_streamer = None
+        
+        # Check for quickreply before processing anything
+        quickreply_result = None
+        try:
+            logger.info("Checking for quickreply...")
+            quickreply_payload = {
+                "configId": config_id,
+                "query": transcript,
+                "language": language
+            }
+            
+            quickreply_response = requests.post(
+                config.QUICKREPLY_API_URL,
+                json=quickreply_payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=config.REQUEST_TIMEOUT
+            )
+            
+            if quickreply_response.status_code == 200:
+                quickreply_data = quickreply_response.json()
+                if quickreply_data and quickreply_data.get('script'):
+                    quickreply_result = quickreply_data
+                    logger.info(f"Quickreply found: {quickreply_result.get('query', '')}")
+                else:
+                    logger.info("No quickreply found - proceeding with normal flow")
+            else:
+                logger.warning(f"Quickreply API returned status {quickreply_response.status_code}")
+                
+        except Exception as e:
+            logger.warning(f"Failed to check quickreply: {str(e)}")
+            # Continue with normal flow if quickreply check fails
+        
+        # If quickreply found, skip validation and KM search, go directly to answer generation
+        if quickreply_result:
+            logger.info("Using quickreply script - skipping validation and KM search")
+            sse_handler.send('status', message=SSEStatus.GENERATING_ANSWER)
+            
+            # Play wait audio before generating answer
+            sse_handler.playAudio('wait2.mp3')
+            
+            # Send the quickreply script as answer chunks
+            script_content = quickreply_result['script']
+            
+            # Split script into chunks and send them
+            def send_answer_chunk(content: str):
+                """Helper to send answer chunk and send to TTS streamer if available"""
+                if content.strip():
+                    sse_handler.send('answer_chunk', data={'content': content})
+                    
+                    # Send to TTS streamer if available
+                    if tts_streamer:
+                        try:
+                            tts_streamer.append_text(content)
+                        except Exception as e:
+                            logger.warning(f"Failed to add text to TTS streamer: {str(e)}")
+            
+            # Send the script content
+            send_answer_chunk(script_content)
+            
+            # TODO: If quickreply_result contains metadata, send it to the client in the future.
+            
+            # Flush TTS and complete
+            if tts_streamer:
+                try:
+                    logger.info("Flushing TTS content for quickreply...")
+                    tts_streamer.flush()
+                    logger.info("Successfully flushed TTS content for quickreply")
+                    sse_handler.mark_component_complete('tts_processing')
+                except Exception as e:
+                    logger.error(f"Failed to flush TTS content: {str(e)}")
+                    sse_handler.mark_component_complete('tts_processing')
+            else:
+                if 'tts_processing' in sse_handler._completion_registry:
+                    sse_handler.mark_component_complete('tts_processing')
+            
+            # Mark text generation as complete
+            sse_handler.mark_component_complete('text_generation')
+            
+            # Send completion status
+            sse_handler.send('status', message=SSEStatus.COMPLETE)
+            logger.info("Quickreply flow completed successfully")
+            return
         
         # Check if keywords are provided directly (skip validation)
         if keywords is not None:
