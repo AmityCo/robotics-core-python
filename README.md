@@ -202,6 +202,131 @@ If the threshold is set to 0.7, the validator will receive `"<transcript not ava
 - **Skip validation**: ~200-500ms faster (no Gemini API call)
 - **Reduced costs**: Fewer external API calls when validation is skipped
 
+## Quickreply System ✨ NEW
+
+The system supports intelligent quickreply functionality that can bypass or enhance the normal processing pipeline based on pre-configured responses.
+
+### Quickreply Flow Types
+
+The system supports three distinct quickreply scenarios:
+
+#### 1. **Full Quickreply** (Script + Optional Metadata)
+When quickreply API returns a complete script:
+- **Pipeline**: Quickreply API → Direct Answer Generation
+- **Skips**: Validation, KM Search, AI Generation
+- **Uses**: Pre-configured script content
+- **Speed**: Fastest (~50-100ms) - minimal processing
+
+```json
+{
+  "script": "Hello! How can I help you today?",
+  "metadata": {
+    "source": "greeting",
+    "category": "welcome"
+  }
+}
+```
+
+#### 2. **Metadata-Only Quickreply** (No Script, Has Metadata)
+When quickreply API returns only metadata:
+- **Pipeline**: Quickreply API → Validation → KM Search → AI Generation
+- **Uses**: Normal AI generation with quickreply metadata fallback
+- **Speed**: Normal processing time with metadata guarantee
+
+```json
+{
+  "metadata": {
+    "doc-ids": "doc123,doc456",
+    "category": "product-info"
+  }
+}
+```
+
+#### 3. **No Quickreply** (No Script, No Metadata)
+When quickreply API returns no relevant data:
+- **Pipeline**: Standard flow (Validation → KM Search → AI Generation)
+- **Uses**: Complete AI processing
+- **Speed**: Standard processing time
+
+### Quickreply API Integration
+
+The system automatically checks the quickreply API before processing:
+
+**Request to Quickreply API:**
+```json
+{
+  "configId": "my-config",
+  "query": "Hello there",
+  "language": "en-US"
+}
+```
+
+**Quickreply API Response Examples:**
+
+**Full Quickreply:**
+```json
+{
+  "query": "Hello there",
+  "script": "Hello! Welcome to our service. How can I assist you today?<break/>Please let me know what you're looking for.",
+  "metadata": {
+    "source": "greeting-template",
+    "category": "welcome",
+    "doc-ids": "welcome-001"
+  }
+}
+```
+
+**Metadata-Only:**
+```json
+{
+  "query": "product information",
+  "metadata": {
+    "doc-ids": "product-101,product-102,faq-201",
+    "category": "product-support"
+  }
+}
+```
+
+**No Quickreply:**
+```json
+{}
+```
+
+### Features
+
+#### Script Processing
+- **Break Tag Support**: `<break/>` tags for TTS chunking
+- **Streaming**: Script content streamed as answer chunks
+- **TTS Integration**: Full text-to-speech support
+- **Metadata**: Optional metadata accompanies script responses
+
+#### Metadata Handling
+- **Priority**: AI-generated metadata takes precedence over quickreply metadata
+- **Fallback**: Quickreply metadata used when AI doesn't generate metadata
+- **Format Support**: JSON objects or string values
+- **Error Handling**: Graceful fallback to raw content if parsing fails
+
+#### Integration Points
+- **Pre-Processing**: Quickreply check happens before validation
+- **Seamless**: Same SSE event structure for all flow types
+- **Consistent**: Uniform API responses regardless of quickreply usage
+- **Configurable**: Per-organization quickreply API configuration
+
+### Performance Characteristics
+
+| Flow Type | Time Savings | Use Cases |
+|-----------|-------------|-----------|
+| **Full Quickreply** | ~90% faster | Greetings, common questions, standard responses |
+| **Metadata-Only** | ~5-10% improvement | Guided responses with known context |
+| **No Quickreply** | Standard speed | Complex queries requiring full AI processing |
+
+### Error Handling
+
+- **API Failures**: Graceful fallback to normal flow
+- **Malformed Responses**: Error logging with normal flow continuation
+- **Network Issues**: Timeout handling with standard processing
+- **Invalid Metadata**: Raw content fallback with warning logs
+
 ## Documentation
 
 - [SSE Implementation Guide](SSE_README.md) - Detailed SSE documentation

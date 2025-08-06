@@ -745,8 +745,24 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                     # If we have pending bracket content, treat it as answer content
                     send_answer_chunk(pending_bracket_buffer.strip())
             
-            # Send metadata if we collected any
-            if metadata_content.strip():
+            # Prioritize quickreply metadata if available, otherwise use generated metadata
+            if quickreply_metadata_only:
+                try:
+                    metadata = quickreply_metadata_only
+                    # If metadata is a string, try to parse it as JSON
+                    if isinstance(metadata, str):
+                        try:
+                            metadata = json.loads(metadata)
+                        except json.JSONDecodeError:
+                            # If it's not valid JSON, send as raw content
+                            metadata = {'raw': metadata}
+                    
+                    sse_handler.send('metadata', data=metadata)
+                    logger.info(f"Sent quickreply metadata from normal flow: {metadata}")
+                except Exception as e:
+                    logger.warning(f"Failed to send quickreply metadata in normal flow: {str(e)}")
+            # Send generated metadata if we collected any and no quickreply metadata
+            elif metadata_content.strip():
                 try:
                     json_match = re.search(r'\{[^}]+\}', metadata_content)
                     if json_match:
@@ -805,23 +821,6 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                         # Send raw metadata content as final fallback
                         sse_handler.send('metadata', data={'raw': metadata_content.strip()})
                         logger.info("Failed to parse JSON and extract doc-ids, sent raw content")
-            
-            # Check if we have quickreply metadata to use instead of or in addition to generated metadata
-            elif quickreply_metadata_only:
-                try:
-                    metadata = quickreply_metadata_only
-                    # If metadata is a string, try to parse it as JSON
-                    if isinstance(metadata, str):
-                        try:
-                            metadata = json.loads(metadata)
-                        except json.JSONDecodeError:
-                            # If it's not valid JSON, send as raw content
-                            metadata = {'raw': metadata}
-                    
-                    sse_handler.send('metadata', data=metadata)
-                    logger.info(f"Sent quickreply metadata from normal flow: {metadata}")
-                except Exception as e:
-                    logger.warning(f"Failed to send quickreply metadata in normal flow: {str(e)}")
             
             # Check for {#NXENDX#} after metadata and send SESSION_ENDED
             if metadata_content and "{#NXENDX#}" in metadata_content:
