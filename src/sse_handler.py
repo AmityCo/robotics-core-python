@@ -2,6 +2,8 @@ import json
 import logging
 import threading
 import time
+import base64
+import os
 from datetime import datetime
 from queue import Empty, Queue
 from typing import Any, Generator
@@ -46,12 +48,42 @@ class SSEHandler:
         # Put the formatted SSE message into the queue
         sse_message = f"data: {json.dumps(sse_data)}\n\n"
         self.queue.put(sse_message)
-        logger.debug(f"SSE message queued: {message_type}")
+        # log for non answer_chunk
+        if message_type not in ['answer_chunk']:
+            logger.info(f"SSE message queued: {message_type} with message '{message}'")
 
     def send_error(self, error_message: str):
         """Send an error message and mark that an error occurred."""
         self.send('error', message=error_message)
         self.error_occurred.set()
+
+    def playAudio(self, fileName: str):
+        """
+        Play an audio file by emitting it through SSE.
+        
+        Args:
+            fileName: Name of the audio file (should be in the audio directory)
+        """
+        try:
+            # Construct path to audio file (assuming it's in the audio directory relative to current work dir)
+            audio_path = os.path.join(os.getcwd(), 'audio', fileName)
+
+            if os.path.exists(audio_path):
+                with open(audio_path, 'rb') as audio_file:
+                    audio_data = audio_file.read()
+                    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                    audio_payload = {
+                        'audioDataLength': len(audio_base64),
+                        'audio_size': len(audio_data),
+                        'audio_format': 'raw-16khz-16bit-mono-pcm',
+                        'audio_data': audio_base64
+                    }
+                    self.send('audio', data=audio_payload)
+                    logger.info(f"Emitted audio file: {fileName} (size: {len(audio_data)} bytes)")
+            else:
+                logger.warning(f"Audio file not found at: {audio_path}")
+        except Exception as e:
+            logger.warning(f"Failed to emit audio file {fileName}: {str(e)}")
 
     def register_component(self, component_name: str):
         """

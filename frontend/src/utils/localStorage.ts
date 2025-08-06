@@ -8,6 +8,7 @@ export interface LocalStorageService {
     transcript: string;
     language: string;
     org_id: string;
+    config_id: string;
     chat_history: ChatMessage[];
   }) => void;
   getRequestHistory: () => SavedRequest[];

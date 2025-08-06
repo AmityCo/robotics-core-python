@@ -13,15 +13,10 @@ from dataclasses import dataclass
 
 from src.org_config import OrgConfigData, TTSModel
 from src.requests_handler import get as cached_get
+from src.tts_handler import TTSHandler
+from src.phoneme_manager import PhonemeManager
 
 logger = logging.getLogger(__name__)
-
-@dataclass
-class TtsPhoneme:
-    """Represents a phoneme mapping for TTS"""
-    name: str
-    phoneme: Optional[str] = None
-    sub: Optional[str] = None
 
 class SSMLFormatter:
     """
@@ -38,65 +33,35 @@ class SSMLFormatter:
         """
         self.azure_config = azure_config
         self.remove_bracketed_words = remove_bracketed_words
-        self.localized_phonemes: Dict[str, List[TtsPhoneme]] = {}
-        self.global_phonemes: List[TtsPhoneme] = []
         self.phonemes_loaded = False
+        # Cache for pre-compiled patterns per language - now managed by PhonemeManager
+        self._phoneme_patterns_cache: Dict[str, List[tuple]] = {}
         
     async def load_phonemes(self) -> None:
-        """Load phoneme data from configured URLs"""
+        """Load phoneme data from configured URLs using PhonemeManager"""
         if self.phonemes_loaded:
             return
             
         try:
-            # Load global phonemes if available
-            if hasattr(self.azure_config, 'phonemeUrl') and self.azure_config.phonemeUrl:
-                self.global_phonemes = await self._load_phoneme_data(self.azure_config.phonemeUrl)
-                logger.info(f"Loaded {len(self.global_phonemes)} global phonemes")
-            
-            # Load localized phonemes for each model
-            for model in self.azure_config.models:
-                if hasattr(model, 'phonemeUrl') and model.phonemeUrl:
-                    lang_phonemes = await self._load_phoneme_data(model.phonemeUrl)
-                    if lang_phonemes:
-                        self.localized_phonemes[model.language.lower()] = lang_phonemes
-                        logger.info(f"Loaded {len(lang_phonemes)} phonemes for {model.language}")
-            
+            # Get phoneme patterns cache from PhonemeManager
+            self._phoneme_patterns_cache = await PhonemeManager.get_phoneme_patterns_cache(self.azure_config)
             self.phonemes_loaded = True
+            logger.info(f"Loaded phoneme patterns for {len(self._phoneme_patterns_cache)} languages")
             
         except Exception as e:
             logger.error(f"Failed to load phonemes: {str(e)}")
     
-    async def _load_phoneme_data(self, url: str) -> List[TtsPhoneme]:
-        """Load phoneme data from a URL using cached requests"""
-        try:
-            logger.info(f"Loading phoneme data from: {url}")
-            
-            # Use cached requests handler for better performance and caching
-            response = await cached_get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                phonemes = []
-                for item in data:
-                    if isinstance(item, dict) and 'name' in item:
-                        phoneme = TtsPhoneme(
-                            name=item['name'],
-                            phoneme=item.get('phoneme'),
-                            sub=item.get('sub')
-                        )
-                        # Only add if it has either phoneme or sub
-                        if phoneme.phoneme or phoneme.sub:
-                            phonemes.append(phoneme)
-                
-                logger.info(f"Successfully loaded {len(phonemes)} phonemes from {url}")
-                return phonemes
-            else:
-                logger.error(f"Failed to load phonemes from {url}: {response.status_code}")
-                
-        except Exception as e:
-            logger.error(f"Error loading phonemes from {url}: {str(e)}")
-        
-        return []
+    def _precompile_phoneme_patterns(self) -> None:
+        """Pre-compile regex patterns for all languages to improve performance"""
+        # This method is now deprecated since PhonemeManager handles pattern compilation
+        # Keeping for backward compatibility but it's a no-op
+        pass
+    
+    def _compile_patterns_for_language(self, language: str) -> List[tuple]:
+        """Compile regex patterns for a specific language"""
+        # This method is now deprecated since PhonemeManager handles pattern compilation
+        # Keeping for backward compatibility but delegating to cached patterns
+        return self._phoneme_patterns_cache.get(language, self._phoneme_patterns_cache.get('default', []))
     
     def transform_text(self, text: str) -> str:
         """
@@ -114,15 +79,53 @@ class SSMLFormatter:
         if self.remove_bracketed_words:
             transformed = re.sub(r'\(.*?\)', '', transformed)
         
-        # Replace illegal characters
-        transformed = (transformed
-                      .replace("&", " And ")
-                      .replace("<", "")
-                      .replace(">", "")
-                      .replace('"', "")
-                      .replace("'", ""))
-        
         return transformed
+    
+    def _replace_illegal_characters(self, text: str) -> str:
+        """
+        Replace special characters that might cause issues with TTS
+        Based on Kotlin implementation
+        
+        Args:
+            text: Input text to clean
+            
+        Returns:
+            Text with illegal characters replaced
+        """
+        return (text.replace("&", " and ")
+                   .replace("<", "")
+                   .replace(">", "")
+                   .replace("\"", "")
+                   .replace("'", "")
+                   .replace("\\n", " ")  # Newline escape sequence
+                   .replace("\\t", " ")  # Tab escape sequence
+                   .replace("\\r", " ")  # Carriage return escape sequence
+                   .replace("\\b", " ")  # Backspace escape sequence
+                   .replace("\\f", " ")  # Form feed escape sequence
+                   .replace("\\v", " ")  # Vertical tab escape sequence
+                   .replace("\\\\", " ")  # Literal backslash
+                   .replace("!", " ")
+                   .replace("?", " ")
+                   .replace(";", " ")
+                   .replace(":", " ")
+                   .replace("#", " number ")
+                   .replace("@", " at ")
+                   .replace("%", " percent ")
+                   .replace("*", " star ")
+                   .replace("(", " ")
+                   .replace(")", " ")
+                   .replace("[", " ")
+                   .replace("]", " ")
+                   .replace("{", " ")
+                   .replace("}", " ")
+                   .replace("`", "")
+                   .replace("~", " ")
+                   .replace("^", " ")
+                   .replace("+", " plus ")
+                   .replace("=", " equals ")
+                   .replace("|", " ")
+                   .replace("/", " ")
+                   .strip())
     
     def transform_with_phonemes(self, text: str, language: str) -> str:
         """
@@ -135,57 +138,33 @@ class SSMLFormatter:
         Returns:
             Text with phoneme tags applied
         """
-        language_lower = language.lower()
-        
-        # Get phonemes for this language
-        localized = self.localized_phonemes.get(language_lower, [])
-        global_phonemes = self.global_phonemes
-        
-        # Get all available names
-        all_names = []
-        for phoneme in localized:
-            if phoneme.name:
-                all_names.append(phoneme.name)
-        for phoneme in global_phonemes:
-            if phoneme.name:
-                all_names.append(phoneme.name)
-        
-        if not all_names:
+        # Early return for empty text
+        if not text or not text.strip():
             return text
         
-        # Remove duplicates and sort by length (longest first)
-        unique_names = list(set(all_names))
-        sorted_names = sorted(unique_names, key=len, reverse=True)
+        
+        # Replace illegal characters before returning
+        text = self._replace_illegal_characters(text)
+        
+        language_lower = language.lower()
+        
+        # Use pre-compiled patterns if available
+        patterns_and_replacements = self._phoneme_patterns_cache.get(
+            language_lower, 
+            self._phoneme_patterns_cache.get('default', [])
+        )
+        
+        if not patterns_and_replacements:
+            return text
         
         current_text = text
         
-        for name_key in sorted_names:
-            # Find phoneme item (prioritize localized)
-            phoneme_item = None
-            for phoneme in localized:
-                if phoneme.name == name_key:
-                    phoneme_item = phoneme
-                    break
-            
-            if not phoneme_item:
-                for phoneme in global_phonemes:
-                    if phoneme.name == name_key:
-                        phoneme_item = phoneme
-                        break
-            
-            if not phoneme_item or (not phoneme_item.sub and not phoneme_item.phoneme):
+        # Apply all transformations using pre-compiled patterns
+        for pattern, replacement_tag, name_key in patterns_and_replacements:
+            # Quick check if the name exists in the text before expensive regex
+            if name_key.lower() not in current_text.lower():
                 continue
-            
-            # Create replacement tag
-            if phoneme_item.sub:
-                replacement_tag = f'<sub alias="{phoneme_item.sub}">{name_key}</sub>'
-            else:
-                replacement_tag = f'<phoneme alphabet="ipa" ph="{phoneme_item.phoneme}">{name_key}</phoneme>'
-            
-            # Create regex pattern to avoid double-replacement
-            escaped_name = re.escape(name_key)
-            pattern = rf'(<(?:phoneme|sub)\b[^>]*>.*?</(?:phoneme|sub)>)|(\b{escaped_name}\b)'
-            
+                
             def replace_func(match):
                 if match.group(1):  # Already tagged
                     return match.group(0)
@@ -194,7 +173,7 @@ class SSMLFormatter:
                 else:
                     return match.group(0)
             
-            current_text = re.sub(pattern, replace_func, current_text, flags=re.IGNORECASE | re.DOTALL)
+            current_text = pattern.sub(replace_func, current_text)
         
         return current_text
     
@@ -223,7 +202,9 @@ class SSMLFormatter:
         
         # Apply phoneme transformations
         if self.phonemes_loaded:
+            start_time = time.time()
             phoneme_text = self.transform_with_phonemes(transformed_text, model.language)
+            logger.info(f"Phoneme transformation took {time.time() - start_time:.2f} seconds")
         else:
             phoneme_text = transformed_text
         
@@ -238,13 +219,19 @@ class SSMLFormatter:
         
         # Get model properties with defaults
         model_name = getattr(model, 'name', 'en-US-AriaNeural')
-        pitch = getattr(model, 'pitch')
+        if not hasattr(model, 'pitch'):
+            pitch = 'medium'
+        else:
+            pitch = getattr(model, 'pitch')
         # if pitch is none, default to 'medium'
         if pitch is None:
             pitch = 'medium'
         # Get rate, default to '1.0' if not set
-        rate = getattr(model, 'rate')
-        # if rate is none, default to '1.0'
+        # check if model has rate attribute
+        if not hasattr(model, 'rate'):
+            rate = '1.0'
+        else:
+            rate = getattr(model, 'rate')
         if rate is None:
             rate = '1.0'
         
@@ -273,7 +260,7 @@ class SSMLFormatter:
     </voice>
 </speak>'''
         
-        return ssml
+        return ssml, phoneme_text
 
 @dataclass
 class TTSChunk:
@@ -299,7 +286,8 @@ class TTSChunk:
 
 class TTSStreamer:
     """
-    Main TTS streaming class that manages text chunks and triggers TTS generation
+    Main TTS streaming class that manages text chunks and triggers TTS generation.
+    Processes text when <break/> keyword is detected for immediate speech generation.
     """
     
     def __init__(self, org_config: OrgConfigData, language: str, 
@@ -312,8 +300,12 @@ class TTSStreamer:
             org_config: Organization configuration containing TTS settings
             language: Language code for all text chunks
             audio_callback: Callback for when audio chunks are ready (text, audio_data)
-            min_words: Minimum words before triggering TTS (default: 4)
+            min_words: Minimum words before triggering TTS (kept for backward compatibility)
             remove_bracketed_words: Whether to remove text in brackets
+            
+        Note:
+            Text processing is now triggered by <break/> keyword rather than word count.
+            The min_words parameter is kept for backward compatibility but not actively used.
         """
         self.language = language
         self.audio_callback = audio_callback
@@ -324,9 +316,10 @@ class TTSStreamer:
             raise ValueError("Azure TTS configuration not found in organization config")
         
         self.azure_config = org_config.tts.azure
-        self.subscription_key = self.azure_config.subscriptionKey
-        self.region = "southeastasia"
-        self.base_url = f"https://{self.region}.tts.speech.microsoft.com"
+        region = "southeastasia"
+        
+        # Initialize TTS handler
+        self.tts_handler = TTSHandler(self.azure_config.subscriptionKey, region)
         
         # Get model for the specified language
         self.model = self._get_model_for_language(language)
@@ -340,7 +333,7 @@ class TTSStreamer:
         self.current_chunk = TTSChunk("")
         self.chunk_order = 0  # Track order for SSML generation
         
-        logger.info(f"Initialized TTS streamer for language: {language}, model: {self.model.name}, min_words: {min_words}")
+        logger.info(f"Initialized TTS streamer for language: {language}, model: {self.model.name}, break-triggered processing enabled")
     
     async def initialize(self) -> None:
         """Initialize the TTS streamer by loading phonemes"""
@@ -360,18 +353,26 @@ class TTSStreamer:
         for model in self.azure_config.models:
             if model.language == language:
                 return model
-        logger.debug(f"No TTS model found for language: {language}, returning default")
+        logger.info(f"No TTS model found for language: {language}, returning default")
         # Return a default model structure if none found
+        # if thai language, name should be "th-TH-PremwadeeNeural
+        if language.startswith('th-'):
+            return type('TTSModel', (), {
+                'language': language,
+                'name': "th-TH-PremwadeeNeural",  # Fallback to a common Thai model
+                'pitch': None,
+                'phonemeUrl': None
+            })()
         return type('TTSModel', (), {
             'language': language,
-            'name': "en-US-AriaNeural",  # Fallback to a common model
+            'name': "es-ES-XimenaMultilingualNeural",  # Fallback to a common model
             'pitch': None,
             'phonemeUrl': None
         })()
     
     def append_text(self, text: str) -> None:
         """
-        Append text to current chunk. If chunk reaches minimum word count,
+        Append text to current chunk. If chunk contains <break/> keyword,
         process it and start a new chunk.
         
         Args:
@@ -382,28 +383,76 @@ class TTSStreamer:
         # Append text to current chunk
         self.current_chunk.append_text(text)
         
-        # Check if we should process the current chunk
-        if self.current_chunk.has_minimum_words(self.min_words):
-            self._process_current_chunk()
+        # Check if we should process the current chunk by looking for <break/> keyword
+        if "<break/>" in self.current_chunk.text:
+            self._process_current_chunk_with_break()
     
     def flush(self) -> None:
         """
         Process any remaining text in the current chunk
         """
         if not self.current_chunk.is_empty():
-            logger.info(f"Flushing remaining text: '{self.current_chunk.text}'")
-            # During flush, we want to process ALL text, including the last word
-            text_to_process = self.current_chunk.text.strip()
+            # First check if there are any <break/> markers to process
+            if "<break/>" in self.current_chunk.text:
+                self._process_current_chunk_with_break()
             
-            # Generate speech for remaining text
-            audio_data = self._generate_speech(text_to_process)
+            # Process any remaining text after break processing
+            if not self.current_chunk.is_empty():
+                logger.info(f"Flushing remaining text: '{self.current_chunk.text}'")
+                # During flush, we want to process ALL text, removing any <break/> markers
+                text_to_process = self.current_chunk.text.replace("<break/>", "").strip()
+                
+                if text_to_process:  # Only process if there's actual content
+                    # Generate speech for remaining text
+                    audio_data = self._generate_speech(text_to_process)
+                    
+                    # Trigger callback if audio was generated successfully
+                    if audio_data and self.audio_callback:
+                        self.audio_callback(text_to_process, audio_data)
+                
+                # Clear the chunk
+                self.current_chunk = TTSChunk("")
+    
+    def _process_current_chunk_with_break(self) -> None:
+        """
+        Process the current chunk when <break/> keyword is detected.
+        Ships off the whole buffer up to and including the <break/> marker.
+        """
+        if self.current_chunk.is_empty():
+            return
+        
+        text_to_process = self.current_chunk.text.strip()
+        
+        # Find the position of <break/> and split the text
+        break_index = text_to_process.find("<break/>")
+        if break_index != -1:
+            # Include everything up to and including <break/>
+            text_with_break = text_to_process[:break_index + len("<break/>")]
+            remaining_text = text_to_process[break_index + len("<break/>"):]
             
-            # Trigger callback if audio was generated successfully
-            if audio_data and self.audio_callback:
-                self.audio_callback(text_to_process, audio_data)
+            # Remove the <break/> tag from the text to be processed (it's just a marker)
+            text_for_speech = text_with_break.replace("<break/>", "").strip()
             
-            # Clear the chunk
-            self.current_chunk = TTSChunk("")
+            if text_for_speech:  # Only process if there's actual content
+                logger.info(f"Processing chunk with break: '{text_for_speech[:100]}...'")
+                
+                # Generate speech for this chunk
+                audio_data = self._generate_speech(text_for_speech)
+                
+                # Trigger callback if audio was generated successfully
+                if audio_data and self.audio_callback:
+                    self.audio_callback(text_for_speech, audio_data)
+            
+            # Create new chunk with any remaining text after <break/>
+            self.current_chunk = TTSChunk(remaining_text.strip())
+            self.chunk_order += 1
+            
+            # Check if the remaining text also contains <break/> and process recursively
+            if "<break/>" in remaining_text:
+                self._process_current_chunk_with_break()
+        else:
+            # This shouldn't happen since we checked for <break/> before calling this method
+            logger.warning("_process_current_chunk_with_break called but no <break/> found")
     
     def _process_current_chunk(self) -> None:
         """
@@ -440,7 +489,7 @@ class TTSStreamer:
 
     def _generate_speech(self, text: str) -> Optional[bytes]:
         """
-        Generate speech using Azure TTS API
+        Generate speech using Azure TTS API via TTSHandler
         
         Args:
             text: Text to convert to speech
@@ -449,70 +498,18 @@ class TTSStreamer:
             Audio data as bytes, or None if failed
         """
         try:
-            # Create SSML using the formatter
-            ssml = self.ssml_formatter.create_ssml(text, self.model, self.chunk_order)
-            
-            # Make TTS request
-            headers = {
-                'Ocp-Apim-Subscription-Key': self.subscription_key,
-                'Content-Type': 'application/ssml+xml',
-                'X-Microsoft-OutputFormat': 'riff-24khz-16bit-mono-pcm',  # Updated to match Kotlin
-                'User-Agent': 'robotics-core-python'
-            }
-            
-            url = f"{self.base_url}/cognitiveservices/v1"
-            
-            logger.debug(f"Making TTS request to {url}")
-            logger.debug(f"SSML content: {ssml}")
-            response = requests.post(url, headers=headers, data=ssml.encode('utf-8'), timeout=30)
-            
-            if response.status_code == 200:
-                logger.info(f"TTS generation successful, audio size: {len(response.content)} bytes")
-                return response.content
-            else:
-                logger.error(f"TTS API error: {response.status_code} - {response.text or response.reason}")
-                return None
+            # Use TTS handler with SSMLFormatter directly
+            return self.tts_handler.generate_speech(text, self.ssml_formatter, self.model, self.chunk_order)
                 
         except Exception as e:
             logger.error(f"Error generating speech: {str(e)}")
-            return None
-    
-    def _create_ssml(self, text: str) -> str:
-        """
-        Create SSML for the text (legacy method, kept for backward compatibility)
-        
-        Args:
-            text: Text to convert
-            
-        Returns:
-            SSML string
-        """
-        # Use the new formatter for backward compatibility
-        return self.ssml_formatter.create_ssml(text, self.model, self.chunk_order)
-    
+            return None 
     
     def get_available_voices(self) -> Optional[List[Dict[str, Any]]]:
         """
-        Get list of available voices from Azure TTS API
+        Get list of available voices from Azure TTS API via TTSHandler
         
         Returns:
             List of voice information or None if failed
         """
-        try:
-            headers = {
-                'Ocp-Apim-Subscription-Key': self.subscription_key
-            }
-            
-            url = f"https://southeastasia.tts.speech.microsoft.com/cognitiveservices/voices/list"
-            
-            response = requests.get(url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logger.error(f"Failed to get voices list: {response.status_code} - {response.text}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error getting voices list: {str(e)}")
-            return None
+        return self.tts_handler.get_available_voices()

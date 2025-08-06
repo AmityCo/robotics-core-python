@@ -1,7 +1,7 @@
 import React from 'react';
-import { OrgIdInputProps } from '../types';
+import { ConfigIdInputProps } from '../types';
 
-const OrgIdInput: React.FC<OrgIdInputProps> = ({ value, onChange }) => {
+const ConfigIdInput: React.FC<ConfigIdInputProps> = ({ value, onChange }) => {
   const handleChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
     onChange(event.target.value);
   };
@@ -9,20 +9,20 @@ const OrgIdInput: React.FC<OrgIdInputProps> = ({ value, onChange }) => {
   return (
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-2">
-        Organization ID
+        Configuration ID
       </label>
       <input
         type="text"
         value={value}
         onChange={handleChange}
         className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-        placeholder="Enter organization ID (e.g., sample_org_123)"
+        placeholder="Enter configuration ID (e.g., 45f9aacfe37ff6c7e072326c600a3b60)"
       />
       <p className="mt-1 text-xs text-gray-500">
-        This ID is used as the partition key to query the organization from DynamoDB
+        This ID is used to select a specific configuration within the organization
       </p>
     </div>
   );
 };
 
-export default OrgIdInput;
+export default ConfigIdInput;

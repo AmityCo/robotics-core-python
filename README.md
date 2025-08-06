@@ -6,9 +6,35 @@ AI-powered answer generation system with real-time progress updates via Server-S
 
 - **Multi-stage Pipeline**: Validation → Knowledge Search → Answer Generation
 - **Real-time Updates**: SSE support for live progress tracking
+- **Standardized Status Messages**: Consistent status reporting via SSEStatus enum
+- **Flexible Input**: Supports audio-based, text-only, and direct keyword input
+- **Skip Validation**: Optional keywords parameter to bypass validation step
+- **Transcript Confidence**: Configurable confidence thresholds for robust validation
 - **Organization Configuration**: Dynamic config from DynamoDB
 - **Multiple AI Models**: Gemini for validation, OpenAI for generation
 - **Knowledge Management**: Integration with Amity Solutions KM API
+
+## SSE Status Messages
+
+The system uses standardized status messages defined in the `SSEStatus` enum:
+
+```python
+class SSEStatus(str, Enum):
+    STARTING = "START"                    # Pipeline initialization
+    VALIDATING = "VALIDATOR_START"        # Gemini validation phase
+    SEARCHING_KM = "SEARCH_START"         # Knowledge management search
+    GENERATING_ANSWER = "GENERATOR_START" # OpenAI answer generation
+    COMPLETE = "COMPLETE"                 # Pipeline completed successfully
+    ERROR = "ERROR"                       # Error occurred
+```
+
+These status values are sent via SSE `status` events to provide consistent, machine-readable progress updates throughout the pipeline.
+
+**Benefits:**
+- **Consistent Monitoring**: Standardized status values for reliable progress tracking
+- **Machine-Readable**: Easy to parse and handle programmatically
+- **Internationalization**: Status codes can be mapped to localized messages
+- **Error Handling**: Clear distinction between progress and error states
 
 ## Quick Start
 
@@ -43,6 +69,263 @@ AI-powered answer generation system with real-time progress updates via Server-S
 - **POST** `/api/v1/gemini/validate` - Gemini validation only
 - **POST** `/api/v1/km/search` - Knowledge management search
 - **POST** `/api/v1/km/batch-search` - Batch knowledge management search
+
+## Enhanced API Features ✨ NEW
+
+### Flexible Input Modes
+
+The SSE API now supports three input modes:
+
+1. **Audio + Text (Default)**: Full validation with audio and transcript
+2. **Text-only**: Validation with transcript only (no audio required)
+3. **Direct Keywords**: Skip validation entirely and use provided keywords
+
+### Request Parameters
+
+```json
+{
+  "transcript": "string",              // Required: User's transcript
+  "language": "string",               // Required: Language code (e.g., "en-US")
+  "base64_audio": "string | null",    // Optional: Base64 encoded audio
+  "org_id": "string",                 // Required: Organization ID
+  "config_id": "string",              // Required: Configuration ID
+  "chat_history": [],                 // Optional: Previous conversation
+  "keywords": ["string"] | null,      // Optional: Skip validation if provided
+  "transcript_confidence": "number"   // Optional: Transcript confidence (0.0-1.0)
+}
+```
+
+### Usage Examples
+
+#### 1. Audio-based Processing (Traditional)
+```json
+{
+  "transcript": "What is the weather like today?",
+  "language": "en-US",
+  "base64_audio": "UklGRnoGAABXQVZFZm10IBAAAAABAAEA...",
+  "org_id": "my-org",
+  "config_id": "my-config"
+}
+```
+
+#### 2. Text-only Processing
+```json
+{
+  "transcript": "What is the weather like today?", 
+  "language": "en-US",
+  "org_id": "my-org",
+  "config_id": "my-config"
+}
+```
+
+#### 3. Skip Validation with Keywords
+```json
+{
+  "transcript": "What is the weather like today?",
+  "language": "en-US", 
+  "org_id": "my-org",
+  "config_id": "my-config",
+  "keywords": ["weather", "forecast", "today"]
+}
+```
+
+#### 4. Skip Validation with Empty Keywords
+```json
+{
+  "transcript": "What is the weather like today?",
+  "language": "en-US",
+  "org_id": "my-org", 
+  "config_id": "my-config",
+  "keywords": []
+}
+```
+
+#### 5. Transcript with Confidence Score
+```json
+{
+  "transcript": "What is the weather like today?",
+  "transcript_confidence": 0.95,
+  "language": "en-US",
+  "org_id": "my-org",
+  "config_id": "my-config"
+}
+```
+
+### Transcript Confidence Threshold ✨ NEW
+
+The system now supports transcript confidence-based validation control. When `transcript_confidence` is provided and falls below configured thresholds, the transcript is replaced with a placeholder during validation.
+
+#### Configuration
+
+Configure confidence thresholds in your organization settings:
+
+**LocalizationConfig** (per-language, higher priority):
+```json
+{
+  "language": "en-US",
+  "validatorTranscriptConfidenceThreshold": 0.8,
+  // ... other localization settings
+}
+```
+
+**GeminiConfig** (global fallback):
+```json
+{
+  "validatorTranscriptConfidenceThreshold": 0.7,
+  // ... other gemini settings
+}
+```
+
+#### Behavior
+
+- **Above threshold**: Original transcript is used for validation
+- **Below threshold**: Transcript is replaced with `"<transcript not available>"` during validation
+- **No threshold set**: Transcript confidence is ignored (normal processing)
+
+#### Example with Low Confidence
+
+```json
+{
+  "transcript": "Where is McDonald's",
+  "transcript_confidence": 0.3,
+  "language": "en-US",
+  "org_id": "my-org",
+  "config_id": "my-config"
+}
+```
+
+If the threshold is set to 0.7, the validator will receive `"<transcript not available>"` instead of the unclear transcript, allowing for more robust validation handling.
+
+### Performance Benefits
+
+- **Text-only**: ~100-200ms faster (no audio processing)
+- **Skip validation**: ~200-500ms faster (no Gemini API call)
+- **Reduced costs**: Fewer external API calls when validation is skipped
+
+## Quickreply System ✨ NEW
+
+The system supports intelligent quickreply functionality that can bypass or enhance the normal processing pipeline based on pre-configured responses.
+
+### Quickreply Flow Types
+
+The system supports three distinct quickreply scenarios:
+
+#### 1. **Full Quickreply** (Script + Optional Metadata)
+When quickreply API returns a complete script:
+- **Pipeline**: Quickreply API → Direct Answer Generation
+- **Skips**: Validation, KM Search, AI Generation
+- **Uses**: Pre-configured script content
+- **Speed**: Fastest (~50-100ms) - minimal processing
+
+```json
+{
+  "script": "Hello! How can I help you today?",
+  "metadata": {
+    "source": "greeting",
+    "category": "welcome"
+  }
+}
+```
+
+#### 2. **Metadata-Only Quickreply** (No Script, Has Metadata)
+When quickreply API returns only metadata:
+- **Pipeline**: Quickreply API → Validation → KM Search → AI Generation
+- **Uses**: Normal AI generation with quickreply metadata fallback
+- **Speed**: Normal processing time with metadata guarantee
+
+```json
+{
+  "metadata": {
+    "doc-ids": "doc123,doc456",
+    "category": "product-info"
+  }
+}
+```
+
+#### 3. **No Quickreply** (No Script, No Metadata)
+When quickreply API returns no relevant data:
+- **Pipeline**: Standard flow (Validation → KM Search → AI Generation)
+- **Uses**: Complete AI processing
+- **Speed**: Standard processing time
+
+### Quickreply API Integration
+
+The system automatically checks the quickreply API before processing:
+
+**Request to Quickreply API:**
+```json
+{
+  "configId": "my-config",
+  "query": "Hello there",
+  "language": "en-US"
+}
+```
+
+**Quickreply API Response Examples:**
+
+**Full Quickreply:**
+```json
+{
+  "query": "Hello there",
+  "script": "Hello! Welcome to our service. How can I assist you today?<break/>Please let me know what you're looking for.",
+  "metadata": {
+    "source": "greeting-template",
+    "category": "welcome",
+    "doc-ids": "welcome-001"
+  }
+}
+```
+
+**Metadata-Only:**
+```json
+{
+  "query": "product information",
+  "metadata": {
+    "doc-ids": "product-101,product-102,faq-201",
+    "category": "product-support"
+  }
+}
+```
+
+**No Quickreply:**
+```json
+{}
+```
+
+### Features
+
+#### Script Processing
+- **Break Tag Support**: `<break/>` tags for TTS chunking
+- **Streaming**: Script content streamed as answer chunks
+- **TTS Integration**: Full text-to-speech support
+- **Metadata**: Optional metadata accompanies script responses
+
+#### Metadata Handling
+- **Priority**: AI-generated metadata takes precedence over quickreply metadata
+- **Fallback**: Quickreply metadata used when AI doesn't generate metadata
+- **Format Support**: JSON objects or string values
+- **Error Handling**: Graceful fallback to raw content if parsing fails
+
+#### Integration Points
+- **Pre-Processing**: Quickreply check happens before validation
+- **Seamless**: Same SSE event structure for all flow types
+- **Consistent**: Uniform API responses regardless of quickreply usage
+- **Configurable**: Per-organization quickreply API configuration
+
+### Performance Characteristics
+
+| Flow Type | Time Savings | Use Cases |
+|-----------|-------------|-----------|
+| **Full Quickreply** | ~90% faster | Greetings, common questions, standard responses |
+| **Metadata-Only** | ~5-10% improvement | Guided responses with known context |
+| **No Quickreply** | Standard speed | Complex queries requiring full AI processing |
+
+### Error Handling
+
+- **API Failures**: Graceful fallback to normal flow
+- **Malformed Responses**: Error logging with normal flow continuation
+- **Network Issues**: Timeout handling with standard processing
+- **Invalid Metadata**: Raw content fallback with warning logs
 
 ## Documentation
 
@@ -104,13 +387,20 @@ The `/api/v1/answer-sse` endpoint provides real-time progress updates via Server
 import requests
 import json
 
-def handle_sse_response(transcript, language, org_id, base64_audio=""):
+def handle_sse_response(transcript, language, org_id, base64_audio=None, keywords=None, transcript_confidence=None):
     payload = {
         "transcript": transcript,
         "language": language,
-        "base64_audio": base64_audio,
         "org_id": org_id
     }
+    
+    # Add optional fields
+    if base64_audio:
+        payload["base64_audio"] = base64_audio
+    if keywords is not None:  # Allow empty list
+        payload["keywords"] = keywords
+    if transcript_confidence is not None:
+        payload["transcript_confidence"] = transcript_confidence
     
     response = requests.post(
         "http://localhost:8000/api/v1/answer-sse",
@@ -127,9 +417,19 @@ def handle_sse_response(transcript, language, org_id, base64_audio=""):
                 
                 # Handle different event types
                 if event_type == 'status':
-                    print(f"Status: {data.get('message')}")
+                    status = data.get('message')
+                    status_messages = {
+                        'START': 'Initializing pipeline...',
+                        'VALIDATOR_START': 'Starting validation...',
+                        'SEARCH_START': 'Searching knowledge base...',
+                        'GENERATOR_START': 'Generating answer...',
+                        'COMPLETE': 'Pipeline completed!',
+                        'ERROR': 'Error occurred!'
+                    }
+                    print(f"Status: {status_messages.get(status, status)}")
                 elif event_type == 'validation_result':
                     print(f"Validation: {data['data']['correction']}")
+                    print(f"Keywords: {data['data']['keywords']}")
                 elif event_type == 'km_result':
                     print(f"KM Search: {len(data['data']['data'])} results")
                 elif event_type == 'answer_chunk':
@@ -143,6 +443,11 @@ def handle_sse_response(transcript, language, org_id, base64_audio=""):
                     
             except json.JSONDecodeError:
                 continue
+
+# Usage examples:
+# handle_sse_response("Hello", "en-US", "org1")  # Text-only
+# handle_sse_response("Hello", "en-US", "org1", keywords=["greeting"])  # Skip validation
+# handle_sse_response("Hello", "en-US", "org1", "audio_data", keywords=[])  # Skip with empty keywords
 ```
 
 #### JavaScript/TypeScript Client Example
@@ -155,12 +460,15 @@ interface SSEEvent {
   message?: string;
 }
 
-async function handleSSE(requestData: {
+interface RequestData {
   transcript: string;
   language: string;
   org_id: string;
-  base64_audio: string;
-}) {
+  base64_audio?: string;  // Optional
+  keywords?: string[];    // Optional - skip validation if provided
+}
+
+async function handleSSE(requestData: RequestData) {
   const response = await fetch('http://localhost:8000/api/v1/answer-sse', {
     method: 'POST',
     headers: {
@@ -190,10 +498,19 @@ async function handleSSE(requestData: {
             
             switch (event.type) {
               case 'status':
-                console.log(`Status: ${event.message}`);
+                const statusMessages = {
+                  'START': 'Initializing pipeline...',
+                  'VALIDATOR_START': 'Starting validation...',
+                  'SEARCH_START': 'Searching knowledge base...',
+                  'GENERATOR_START': 'Generating answer...',
+                  'COMPLETE': 'Pipeline completed!',
+                  'ERROR': 'Error occurred!'
+                };
+                console.log(`Status: ${statusMessages[event.message] || event.message}`);
                 break;
               case 'validation_result':
                 console.log('Validation completed:', event.data);
+                console.log('Keywords:', event.data.keywords);
                 break;
               case 'km_result':
                 console.log('KM search completed:', event.data);
@@ -228,6 +545,11 @@ async function handleSSE(requestData: {
     reader.releaseLock();
   }
 }
+
+// Usage examples:
+// handleSSE({ transcript: "Hello", language: "en-US", org_id: "org1" });  // Text-only
+// handleSSE({ transcript: "Hello", language: "en-US", org_id: "org1", keywords: ["greeting"] });  // Skip validation
+// handleSSE({ transcript: "Hello", language: "en-US", org_id: "org1", keywords: [] });  // Skip with empty keywords
 ```
 
 #### Kotlin Client Example
@@ -241,6 +563,8 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.ByteArrayOutputStream
+import java.util.Base64
 
 @Serializable
 data class SSERequest(
@@ -258,16 +582,65 @@ data class SSEEvent(
     val message: String? = null
 )
 
+@Serializable
+data class TTSAudioData(
+    val text: String,
+    val language: String,
+    val audio_size: Int,
+    val audio_data: String? = null,
+    val audio_format: String,
+    val chunk_index: Int? = null,
+    val total_chunks: Int? = null,
+    val is_final: Boolean? = null
+)
+
 class SSEClient {
-    private val client = OkHttpClient()
-    private val json = Json { ignoreUnknownKeys = true }
+    private val client = OkHttpClient.Builder()
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+    private val json = Json { 
+        ignoreUnknownKeys = true
+        isLenient = true
+    }
+    
+    // Buffer for chunked audio data
+    private val audioBuffers = mutableMapOf<String, ChunkedAudioBuffer>()
+
+    data class ChunkedAudioBuffer(
+        val chunks: MutableMap<Int, String> = mutableMapOf(),
+        var totalChunks: Int = 0,
+        var text: String = "",
+        var language: String = "",
+        var format: String = "",
+        var totalSize: Int = 0
+    ) {
+        fun isComplete(): Boolean = chunks.size == totalChunks && totalChunks > 0
+        
+        fun getCompleteAudioData(): ByteArray? {
+            if (!isComplete()) return null
+            
+            val completeBase64 = StringBuilder()
+            for (i in 0 until totalChunks) {
+                chunks[i]?.let { completeBase64.append(it) }
+                    ?: return null // Missing chunk
+            }
+            
+            return try {
+                Base64.getDecoder().decode(completeBase64.toString())
+            } catch (e: Exception) {
+                println("Failed to decode complete audio data: ${e.message}")
+                null
+            }
+        }
+    }
 
     suspend fun handleSSE(
         transcript: String,
         language: String,
         orgId: String,
         base64Audio: String = "",
-        onEvent: (SSEEvent) -> Unit
+        onEvent: (SSEEvent) -> Unit,
+        onCompleteAudio: ((text: String, audioData: ByteArray, format: String, language: String) -> Unit)? = null
     ) = withContext(Dispatchers.IO) {
         val requestData = SSERequest(
             transcript = transcript,
@@ -292,13 +665,28 @@ class SSEClient {
             }
 
             val reader = BufferedReader(InputStreamReader(response.body!!.byteStream()))
+            var lineBuffer = StringBuilder()
             
             try {
                 reader.lineSequence().forEach { line ->
                     if (line.startsWith("data: ")) {
                         try {
                             val eventData = line.substring(6)
-                            val event = json.decodeFromString<SSEEvent>(eventData)
+                            
+                            // Handle potentially large JSON by streaming parse
+                            val event = try {
+                                json.decodeFromString<SSEEvent>(eventData)
+                            } catch (e: Exception) {
+                                // If JSON is too large or malformed, skip gracefully
+                                println("Skipping malformed SSE event: ${e.message}")
+                                return@forEach
+                            }
+                            
+                            // Handle chunked audio specifically
+                            if (event.type == "tts_audio") {
+                                handleTTSAudio(event, onCompleteAudio)
+                            }
+                            
                             onEvent(event)
                             
                             // Break on completion or error
@@ -306,7 +694,7 @@ class SSEClient {
                                 return@forEach
                             }
                         } catch (e: Exception) {
-                            // Skip invalid JSON lines
+                            // Log but continue processing other events
                             println("Failed to parse SSE event: ${e.message}")
                         }
                     }
@@ -316,57 +704,145 @@ class SSEClient {
             }
         }
     }
+    
+    private fun handleTTSAudio(
+        event: SSEEvent,
+        onCompleteAudio: ((String, ByteArray, String, String) -> Unit)?
+    ) {
+        try {
+            val audioData = json.decodeFromJsonElement<TTSAudioData>(
+                event.data ?: return
+            )
+            
+            // Check if this is chunked audio
+            if (audioData.chunk_index != null && audioData.total_chunks != null) {
+                handleChunkedAudio(audioData, onCompleteAudio)
+            } else {
+                // Handle single chunk audio (current implementation)
+                audioData.audio_data?.let { base64Data ->
+                    try {
+                        val audioBytes = Base64.getDecoder().decode(base64Data)
+                        onCompleteAudio?.invoke(
+                            audioData.text,
+                            audioBytes,
+                            audioData.audio_format,
+                            audioData.language
+                        )
+                    } catch (e: Exception) {
+                        println("Failed to decode audio data: ${e.message}")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            println("Failed to parse TTS audio data: ${e.message}")
+        }
+    }
+    
+    private fun handleChunkedAudio(
+        audioData: TTSAudioData,
+        onCompleteAudio: ((String, ByteArray, String, String) -> Unit)?
+    ) {
+        val audioId = "${audioData.text.hashCode()}_${audioData.language}"
+        val buffer = audioBuffers.getOrPut(audioId) { ChunkedAudioBuffer() }
+        
+        // Update buffer metadata
+        buffer.text = audioData.text
+        buffer.language = audioData.language
+        buffer.format = audioData.audio_format
+        buffer.totalSize = audioData.audio_size
+        buffer.totalChunks = audioData.total_chunks ?: 1
+        
+        // Add chunk data
+        audioData.chunk_index?.let { chunkIndex ->
+            audioData.audio_data?.let { chunkData ->
+                buffer.chunks[chunkIndex] = chunkData
+            }
+        }
+        
+        // Check if audio is complete
+        if (buffer.isComplete() || audioData.is_final == true) {
+            buffer.getCompleteAudioData()?.let { completeAudio ->
+                onCompleteAudio?.invoke(
+                    buffer.text,
+                    completeAudio,
+                    buffer.format,
+                    buffer.language
+                )
+            }
+            // Clean up buffer
+            audioBuffers.remove(audioId)
+        }
+    }
 }
 
-// Usage example
+// Usage example with robust audio handling
 suspend fun main() {
     val sseClient = SSEClient()
     
     sseClient.handleSSE(
         transcript = "What are the office hours?",
         language = "en",
-        orgId = "example-org-123"
-    ) { event ->
-        when (event.type) {
-            "status" -> {
-                println("Status: ${event.message}")
+        orgId = "example-org-123",
+        onEvent = { event ->
+            when (event.type) {
+                "status" -> {
+                    val statusMessages = mapOf(
+                        "START" to "Initializing pipeline...",
+                        "VALIDATOR_START" to "Starting validation...",
+                        "SEARCH_START" to "Searching knowledge base...",
+                        "GENERATOR_START" to "Generating answer...",
+                        "COMPLETE" to "Pipeline completed!",
+                        "ERROR" to "Error occurred!"
+                    )
+                    println("Status: ${statusMessages[event.message] ?: event.message}")
+                }
+                "validation_result" -> {
+                    val data = event.data?.jsonObject
+                    val correction = data?.get("correction")?.jsonPrimitive?.content
+                    println("Validation: $correction")
+                }
+                "km_result" -> {
+                    val data = event.data?.jsonObject
+                    val results = data?.get("data")?.jsonArray
+                    println("KM Search: ${results?.size} results")
+                }
+                "answer_chunk" -> {
+                    val content = event.data?.jsonObject?.get("content")?.jsonPrimitive?.content
+                    print(content)
+                }
+                "thinking" -> {
+                    val content = event.data?.jsonObject?.get("content")?.jsonPrimitive?.content
+                    println("AI thinking: $content")
+                }
+                "metadata" -> {
+                    val docIds = event.data?.jsonObject?.get("doc_ids")?.jsonPrimitive?.content
+                    println("Sources: $docIds")
+                }
+                "tts_audio" -> {
+                    // Audio handling is done in onCompleteAudio callback
+                    println("Received TTS audio chunk")
+                }
+                "complete" -> {
+                    println("\nPipeline completed successfully!")
+                }
+                "error" -> {
+                    println("Error: ${event.message}")
+                }
             }
-            "validation_result" -> {
-                val data = event.data?.jsonObject
-                val correction = data?.get("correction")?.jsonPrimitive?.content
-                println("Validation: $correction")
-            }
-            "km_result" -> {
-                val data = event.data?.jsonObject
-                val results = data?.get("data")?.jsonArray
-                println("KM Search: ${results?.size} results")
-            }
-            "answer_chunk" -> {
-                val content = event.data?.jsonObject?.get("content")?.jsonPrimitive?.content
-                print(content)
-            }
-            "thinking" -> {
-                val content = event.data?.jsonObject?.get("content")?.jsonPrimitive?.content
-                println("AI thinking: $content")
-            }
-            "metadata" -> {
-                val docIds = event.data?.jsonObject?.get("doc_ids")?.jsonPrimitive?.content
-                println("Sources: $docIds")
-            }
-            "tts_audio" -> {
-                val audioData = event.data?.jsonObject?.get("audio")?.jsonPrimitive?.content
-                val format = event.data?.jsonObject?.get("format")?.jsonPrimitive?.content
-                println("Received TTS audio ($format)")
-                // Handle audio playback here
-            }
-            "complete" -> {
-                println("\nPipeline completed successfully!")
-            }
-            "error" -> {
-                println("Error: ${event.message}")
-            }
+        },
+        onCompleteAudio = { text, audioData, format, language ->
+            println("Complete audio ready: ${text.take(50)}... (${audioData.size} bytes, $format)")
+            // Play audio here
+            playAudio(audioData, format)
         }
-    }
+    )
+}
+
+// Audio playback function (implement based on your platform)
+fun playAudio(audioData: ByteArray, format: String) {
+    // Android: Use MediaPlayer with temporary file or AudioTrack
+    // Desktop: Use javax.sound.sampled or external library
+    println("Playing audio: ${audioData.size} bytes in $format format")
 }
 
 // For Android projects, add these dependencies to build.gradle.kts:
@@ -385,29 +861,55 @@ The SSE endpoint emits the following event types:
 
 | Event Type | Description | Data Structure |
 |------------|-------------|----------------|
-| `status` | Pipeline progress updates | `{ message: string }` |
+| `status` | Pipeline progress updates with standardized values | `{ message: SSEStatus }` - Values: `START`, `VALIDATOR_START`, `SEARCH_START`, `GENERATOR_START`, `COMPLETE`, `ERROR` |
 | `validation_result` | Gemini validation completed | `{ correction: string, keywords: string[] }` |
 | `km_result` | Knowledge management search results | `{ data: {documentId: string, document: {id: string, metadata: string, publicId: string, sampleQuestions: string, content: string }, rerankerScore: number, score: number }[], total: number }` |
 | `answer_chunk` | Streaming answer content | `{ content: string }` |
 | `thinking` | AI reasoning process (optional) | `{ content: string }` |
 | `metadata` | Answer metadata (confidence, sources) | `{ doc_ids: string }` |
-| `tts_audio` | Text-to-speech audio data | `{ audio: string, format: string }` |
+| `tts_audio` | Text-to-speech audio data | `{ text: string, language: string, audio_size: number, audio_data: string, audio_format: string, chunk_index?: number, total_chunks?: number, is_final?: boolean }` |
 | `complete` | Pipeline finished successfully | `{ message: string }` |
 | `error` | Error occurred | `{ message: string }` |
 
+### TTS Audio Handling Considerations
+
+**Large Audio Data**: TTS audio files can be quite large (40KB-200KB+) when base64-encoded. This can cause issues with:
+
+- **SSE Message Size Limits**: Some browsers/servers limit individual SSE event sizes
+- **Memory Usage**: Large base64 strings can cause memory spikes
+- **Network Buffering**: Large chunks may cause buffering problems
+- **JSON Parsing Performance**: Very large JSON payloads are slow to parse
+
+**Current Implementation**: Audio is sent as a single large base64-encoded chunk in the `audio_data` field.
+
+**Recommended Client-Side Solutions**:
+1. **Streaming JSON Parser**: Use streaming JSON parsers for large events
+2. **Memory Management**: Immediately decode and release base64 strings
+3. **Timeout Handling**: Set appropriate timeouts for large audio chunks
+4. **Chunked Audio Support**: Implement support for potential future chunked audio (see Kotlin example above)
+
+**Future Enhancements**: The server may implement audio chunking for very large files:
+- `chunk_index`: Index of current chunk (0-based)
+- `total_chunks`: Total number of chunks for this audio
+- `is_final`: Whether this is the final chunk
+- Clients should buffer chunks and reassemble complete audio
+
 ### Event Flow Sequence
 
-1. **status**: "Starting answer pipeline"
-2. **status**: "Starting validation with Gemini"
+1. **status**: `START` - Pipeline initialization
+2. **status**: `VALIDATOR_START` - Beginning validation phase
 3. **validation_result**: Corrected transcript and search terms
-4. **status**: "Starting knowledge management search"
+4. **status**: `SEARCH_START` - Beginning knowledge management search
 5. **km_result**: Search results from knowledge base
-6. **status**: "Starting answer generation with OpenAI"
+6. **status**: `GENERATOR_START` - Beginning answer generation
 7. **answer_chunk**: Streaming answer content (multiple events)
 8. **thinking**: AI reasoning (if enabled)
 9. **metadata**: Answer metadata and sources
 10. **tts_audio**: Audio data (if TTS enabled)
-11. **complete**: Pipeline finished
+11. **status**: `COMPLETE` - Pipeline finished successfully
+
+**Error Scenarios:**
+- **status**: `ERROR` - Sent before any error event when issues occur
 
 ### Error Handling
 

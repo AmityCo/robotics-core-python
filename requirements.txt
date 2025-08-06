@@ -8,3 +8,12 @@ boto3==1.35.93
 python-dotenv==1.0.1
 sseclient-py==1.8.0
 cashews[redis]==7.4.0
+azure-storage-blob==12.24.0
+azure-identity==1.19.0
+opentelemetry-api==1.27.0
+opentelemetry-sdk==1.27.0
+opentelemetry-instrumentation-fastapi==0.48b0
+opentelemetry-instrumentation-requests==0.48b0
+opentelemetry-instrumentation-boto3sqs==0.48b0
+azure-monitor-opentelemetry-exporter==1.0.0b27
+numpy==1.26.4

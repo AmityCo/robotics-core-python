@@ -8,7 +8,10 @@ import threading
 import base64
 import re
 import asyncio
-from typing import Generator, Dict, List
+import os
+import random
+import requests
+from typing import Generator, Dict, List, Optional
 from requests import RequestException
 
 from src.sse_handler import SSEHandler
@@ -16,13 +19,78 @@ from src.app_config import config
 from src.requests_handler import get as cached_get
 from src.km_search import KMBatchSearchRequest, batch_search_km
 from src.validator import GeminiValidationRequest, validate_with_gemini
-from src.generator import OpenAIGenerationRequest, stream_answer_with_openai, stream_answer_with_openai_with_config
+from src.generator import OpenAIGenerationRequest, stream_answer_with_openai_with_config
 from src.org_config import load_org_config
 from src.tts_stream import TTSStreamer
-from src.models import ChatMessage
+from src.models import ChatMessage, SSEStatus
+from src.km_data_formatter import extract_relevant_km_data
+from src.audio_helper import AudioProcessor
 
 # Configure logger
 logger = logging.getLogger(__name__)
+
+
+def get_random_processing_message(org_config, language: str) -> str:
+    """
+    Get a random processing message for the specified language from org config.
+    
+    Args:
+        org_config: The organization configuration
+        language: Language code (e.g., 'en-US', 'th-TH')
+        
+    Returns:
+        Random processing transcript text for the language
+    """
+    try:
+        # First try to get from avatar.processing in resources
+        if (hasattr(org_config, 'resources') and 
+            org_config.resources and 
+            hasattr(org_config.resources, 'avatar') and 
+            org_config.resources.avatar):
+            
+            avatar_dict = org_config.resources.avatar
+            if isinstance(avatar_dict, dict) and 'processing' in avatar_dict:
+                processing_items = avatar_dict['processing']
+                
+                # Filter items for the specified language
+                language_items = [item for item in processing_items 
+                                if isinstance(item, dict) and 
+                                item.get('language') == language and 
+                                'transcript' in item]
+                
+                if language_items:
+                    # Pick a random item and return its transcript
+                    random_item = random.choice(language_items)
+                    return random_item['transcript']
+        
+        # Fallback: try to get from state.processing.message
+        if (hasattr(org_config, 'state') and 
+            org_config.state and 
+            hasattr(org_config.state, 'processing') and 
+            org_config.state.processing):
+            
+            processing_dict = org_config.state.processing
+            if isinstance(processing_dict, dict) and 'message' in processing_dict:
+                messages = processing_dict['message']
+                if isinstance(messages, dict) and language in messages:
+                    return messages[language]
+        
+        # Final fallback: return a default message based on language
+        default_messages = {
+            'en-US': 'Please wait a moment',
+            'th-TH': 'กรุณารอสักครู่ค่ะ',
+            'zh-CN': '请稍等片刻',
+            'ja-JP': '少しお待ちください',
+            'ko-KR': '잠시만 기다려 주세요',
+            'ar-AE': 'من فضلك، انتظر لحظة',
+            'ru-RU': 'Пожалуйста, подождите минуту'
+        }
+        
+        return default_messages.get(language, 'Please wait a moment')
+        
+    except Exception as e:
+        logger.warning(f"Failed to get processing message for language {language}: {str(e)}")
+        return 'Please wait a moment'
 
 
 async def get_validation_prompts_from_org_config(org_config, language: str):
@@ -106,24 +174,82 @@ async def get_validation_prompts_from_org_config(org_config, language: str):
     
     return validation_system_prompt, validation_user_prompt, validator_model
 
+def trim_audio_if_enabled(org_config, base64_audio: Optional[str]) -> Optional[str]:
+    """
+    Trim audio silence if auto_trim_silent flag is enabled in organization config.
+    
+    Args:
+        org_config: Organization configuration containing audio settings
+        base64_audio: Base64 encoded audio data (optional)
+        
+    Returns:
+        Trimmed base64 audio data if trimming is enabled, otherwise original audio
+    """
+    if not base64_audio:
+        return base64_audio
+    
+    try:
+        # Check if auto trimming is enabled in config
+        auto_trim_enabled = getattr(org_config.audio, 'auto_trim_silent', False)
+        
+        if not auto_trim_enabled:
+            logger.debug("Audio auto trimming is disabled in organization config")
+            return base64_audio
+        
+        logger.info("Auto trim silent audio is enabled - processing audio")
+        
+        # Decode base64 audio data
+        audio_data = base64.b64decode(base64_audio)
+        
+        # Create audio processor and trim silence
+        audio_processor = AudioProcessor(silence_threshold=0.05, enable_trimming=True)
+        trimmed_audio_data = audio_processor.trim_silence(audio_data)
+        
+        # Re-encode to base64
+        trimmed_base64_audio = base64.b64encode(trimmed_audio_data).decode('utf-8')
+        
+        # Log trimming results
+        original_size = len(audio_data)
+        trimmed_size = len(trimmed_audio_data)
+        size_reduction = original_size - trimmed_size
+        size_reduction_percent = (size_reduction / original_size) * 100 if original_size > 0 else 0
+        
+        logger.info(f"Audio trimming completed: {original_size} bytes -> {trimmed_size} bytes "
+                   f"(reduced by {size_reduction} bytes, {size_reduction_percent:.1f}%)")
+        
+        return trimmed_base64_audio
+        
+    except Exception as e:
+        logger.error(f"Error trimming audio: {str(e)}")
+        logger.info("Returning original audio data due to trimming error")
+        return base64_audio
 
-async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str, chat_history: List[ChatMessage]):
+
+
+async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None, generate_answer: bool = True):
     """
     Background worker function that executes the answer pipeline.
     Uses SSEHandler to send messages back to the main thread.
+    Supports both audio-based and text-only validation.
+    If keywords are provided, validation step is skipped.
+    If generate_answer is False, the pipeline ends after KM search results are returned.
     """
     try:
         # Send initial status
-        sse_handler.send('status', message='Starting answer pipeline')
+        sse_handler.send('status', message=SSEStatus.STARTING)
         logger.info("Starting answer pipeline in background thread")
         
         # Load organization configuration
-        org_config = await load_org_config(org_id)
+        org_config = await load_org_config(org_id, config_id)
         if not org_config:
-            sse_handler.send_error(f"Organization configuration not found for ID: {org_id}")
+            sse_handler.send('status', message=SSEStatus.ERROR)
+            sse_handler.send_error(f"Organization configuration not found for orgId: {org_id}, configId: {config_id}")
             return
         
         logger.info(f"Loaded org config for: {org_config.displayName} (kmId: {org_config.kmId})")
+        
+        # Trim audio silence if enabled in organization config
+        base64_audio = trim_audio_if_enabled(org_config, base64_audio)
         
         # Initialize TTS streamer if TTS config is available
         tts_streamer = None
@@ -139,67 +265,249 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                     'language': language,
                     'audio_size': len(audio_data),
                     'audio_data': base64.b64encode(audio_data).decode('utf-8'),
-                    'audio_format': 'audio-16khz-128kbitrate-mono-mp3'
+                    'audio_format': 'raw-16khz-16bit-mono-pcm'
                 }
                 sse_handler.send('tts_audio', data=tts_audio_data)
                 logger.info(f"TTS audio sent for text: '{text[:50]}...' (language: {language}, size: {len(audio_data)} bytes)")
             
             tts_streamer = TTSStreamer(org_config, language, audio_callback=tts_audio_callback)
+            await tts_streamer.initialize()
             sse_handler.register_component('tts_processing')
             logger.info("TTS streamer initialized successfully")
         except Exception as e:
             logger.warning(f"Failed to initialize TTS streamer: {str(e)}")
             tts_streamer = None
         
-        # Get validation prompts from org config
-        validation_system_prompt, validation_user_prompt, validator_model = await get_validation_prompts_from_org_config(org_config, language)
+        # Check for quickreply before processing anything
+        quickreply_result = None
+        quickreply_metadata_only = None
+        try:
+            logger.info("Checking for quickreply...")
+            quickreply_payload = {
+                "configId": config_id,
+                "query": transcript,
+                "language": language
+            }
+            
+            quickreply_response = requests.post(
+                config.QUICKREPLY_API_URL,
+                json=quickreply_payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=config.REQUEST_TIMEOUT
+            )
+            
+            if quickreply_response.status_code == 200:
+                quickreply_data = quickreply_response.json()
+                if quickreply_data:
+                    script = quickreply_data.get('script', '').strip()
+                    metadata = quickreply_data.get('metadata')
+                    
+                    if script:
+                        # Full quickreply with script - use quickreply flow
+                        quickreply_result = quickreply_data
+                        logger.info(f"Quickreply with script found: {quickreply_result.get('query', '')}")
+                    elif metadata:
+                        # Quickreply with only metadata - use normal flow but preserve metadata
+                        quickreply_metadata_only = metadata
+                        logger.info(f"Quickreply with metadata only found - will use normal flow with preserved metadata")
+                    else:
+                        logger.info("No quickreply script or metadata found - proceeding with normal flow")
+                else:
+                    logger.info("No quickreply data found - proceeding with normal flow")
+            else:
+                logger.warning(f"Quickreply API returned status {quickreply_response.status_code}")
+                
+        except Exception as e:
+            logger.warning(f"Failed to check quickreply: {str(e)}")
+            # Continue with normal flow if quickreply check fails
         
-        # Send validation start status
-        sse_handler.send('status', message='Starting validation with Gemini')
-        logger.info(f"Starting validation with Gemini using model: {validator_model}")
+        # If quickreply found with script, skip validation and KM search, go directly to answer generation
+        if quickreply_result:
+            logger.info("Using quickreply script - skipping validation and KM search")
+            sse_handler.send('status', message=SSEStatus.GENERATING_ANSWER)
+            
+            # Play wait audio before generating answer
+            sse_handler.playAudio('wait2.mp3')
+            
+            # Send the quickreply script as answer chunks
+            script_content = quickreply_result['script']
+            
+            # Split script into chunks and send them
+            def send_answer_chunk(content: str):
+                """Helper to send answer chunk and send to TTS streamer if available"""
+                if content.strip():
+                    sse_handler.send('answer_chunk', data={'content': content})
+                    
+                    # Send to TTS streamer if available
+                    if tts_streamer:
+                        try:
+                            tts_streamer.append_text(content)
+                        except Exception as e:
+                            logger.warning(f"Failed to add text to TTS streamer: {str(e)}")
+            
+            # Check if script content contains <break/> tags for chunking (same as existing flow)
+            if '<break/>' in script_content:
+                # Split by <break/> and send each chunk separately
+                chunks = script_content.split('<break/>')
+                logger.info(f"Splitting quickreply script into {len(chunks)} chunks using <break/> delimiter")
+                
+                for i, chunk in enumerate(chunks):
+                    if chunk.strip():  # Only send non-empty chunks
+                        # Add <break/> back to all chunks except the last one to maintain TTS behavior
+                        chunk_content = chunk.strip()
+                        if i < len(chunks) - 1:  # Not the last chunk
+                            chunk_content += '<break/>'
+                        send_answer_chunk(chunk_content)
+                        logger.debug(f"Sent quickreply chunk {i+1}/{len(chunks)}: '{chunk_content[:50]}...'")
+            else:
+                # Send the script content as a single chunk if no <break/> tags
+                send_answer_chunk(script_content)
+            
+            # Send metadata if present in quickreply result
+            if quickreply_result.get('metadata'):
+                try:
+                    metadata = quickreply_result['metadata']
+                    # If metadata is a string, try to parse it as JSON
+                    if isinstance(metadata, str):
+                        try:
+                            metadata = json.loads(metadata)
+                        except json.JSONDecodeError:
+                            # If it's not valid JSON, send as raw content
+                            metadata = {'raw': metadata}
+                    
+                    sse_handler.send('metadata', data=metadata)
+                    logger.info(f"Sent quickreply metadata: {metadata}")
+                except Exception as e:
+                    logger.warning(f"Failed to send quickreply metadata: {str(e)}")
+            
+            # Flush TTS and complete
+            if tts_streamer:
+                try:
+                    logger.info("Flushing TTS content for quickreply...")
+                    tts_streamer.flush()
+                    logger.info("Successfully flushed TTS content for quickreply")
+                    sse_handler.mark_component_complete('tts_processing')
+                except Exception as e:
+                    logger.error(f"Failed to flush TTS content: {str(e)}")
+                    sse_handler.mark_component_complete('tts_processing')
+            else:
+                if 'tts_processing' in sse_handler._completion_registry:
+                    sse_handler.mark_component_complete('tts_processing')
+            
+            # Mark text generation as complete
+            sse_handler.mark_component_complete('text_generation')
+            
+            # Send completion status
+            sse_handler.send('status', message=SSEStatus.COMPLETE)
+            logger.info("Quickreply flow completed successfully")
+            return
         
-        # Step 1: Perform Gemini validation using the refactored validator
-        validator_request = GeminiValidationRequest(
-            transcript=transcript,
-            language=language,
-            base64_audio=base64_audio,
-            validation_system_prompt=validation_system_prompt,
-            validation_user_prompt=validation_user_prompt,
-            model=validator_model,
-            generation_config={
-                "temperature": 0.01,
-                "topP": 0.95,
-                "topK": 64,
-                "maxOutputTokens": 8192,
-                "responseMimeType": "application/json"
-            },
-            gemini_api_key=org_config.gemini.key,
-            chat_history=chat_history
-        )
-        
-        validation_result = validate_with_gemini(validator_request)
-        logger.info(f"Validation completed: {validation_result.correction}")
+        # Check if keywords are provided directly (skip validation)
+        if keywords is not None:
+            # Skip validation - use provided keywords and transcript directly
+            logger.info(f"Skipping validation - using provided keywords: {keywords}")
+            # sse_handler.send('status', message=SSEStatus.VALIDATING)
+            
+            # Create a mock validation result using the transcript and provided keywords
+            validation_data = {
+                'correction': transcript,  # Use transcript as-is for correction
+                'keywords': keywords or []  # Use provided keywords (even if empty)
+            }
+            
+            # Set up variables for KM search
+            correction = transcript
+            validation_keywords = keywords or []
+            
+        else:
+            # Perform normal validation process
+            # Get validation prompts from org config
+            validation_system_prompt, validation_user_prompt, validator_model = await get_validation_prompts_from_org_config(org_config, language)
+            
+            # Send validation start status
+            validation_type = "text-based" if base64_audio is None else "audio-based"
+            sse_handler.send('status', message=SSEStatus.VALIDATING)
+            logger.info(f"Starting {validation_type} validation with Gemini using model: {validator_model}")
+            
+            # Generate and play processing TTS message at the start of validation
+            try:
+                processing_message = get_random_processing_message(org_config, language)
+                if processing_message and tts_streamer:
+                    logger.info(f"Generating TTS for processing message: '{processing_message}' (language: {language})")
+                    # Generate TTS for the processing message immediately
+                    tts_streamer.append_text(processing_message)
+                    tts_streamer.flush()  # Ensure it gets processed immediately
+            except Exception as e:
+                logger.warning(f"Failed to generate processing TTS: {str(e)}")
+            
+            # Check transcript confidence threshold
+            validation_transcript = transcript
+            if transcript_confidence is not None:
+                # Get confidence threshold from localization config (higher priority) or gemini config
+                confidence_threshold = None
+                
+                # First try to get from localization config for the current language
+                for localization in org_config.localization:
+                    if localization.language == language and localization.validatorTranscriptConfidenceThreshold is not None:
+                        confidence_threshold = localization.validatorTranscriptConfidenceThreshold
+                        break
+                
+                # Fallback to gemini config if not found in localization
+                if confidence_threshold is None and org_config.gemini.validatorTranscriptConfidenceThreshold is not None:
+                    confidence_threshold = org_config.gemini.validatorTranscriptConfidenceThreshold
+                
+                # Apply threshold check if configured
+                if confidence_threshold is not None and transcript_confidence < confidence_threshold:
+                    validation_transcript = "<transcript not available>"
+                    logger.info(f"Transcript confidence {transcript_confidence} below threshold {confidence_threshold}, using placeholder")
+                else:
+                    logger.info(f"Transcript confidence {transcript_confidence} meets threshold {confidence_threshold}, using original transcript")
+            
+            # Step 1: Perform Gemini validation using the refactored validator
+            validator_request = GeminiValidationRequest(
+                transcript=validation_transcript,
+                language=language,
+                base64_audio=base64_audio,  # This can now be None for text-only validation
+                validation_system_prompt=validation_system_prompt,
+                validation_user_prompt=validation_user_prompt,
+                model=validator_model,
+                generation_config={
+                    "temperature": 0.01,
+                    "topP": 0.95,
+                    "topK": 64,
+                    "maxOutputTokens": 8192,
+                    "responseMimeType": "application/json"
+                },
+                gemini_api_key=org_config.gemini.key,
+                chat_history=chat_history
+            )
+            
+            validation_result = validate_with_gemini(validator_request)
+            logger.info(f"Validation completed: {validation_result.correction}")
 
-        # Send validation result
-        validation_data = {
-            'correction': validation_result.correction,
-            'keywords': validation_result.keywords
-        }
-        sse_handler.send('validation_result', data=validation_data)
+            # Send validation result
+            validation_data = {
+                'correction': validation_result.correction,
+                'keywords': validation_result.keywords
+            }
+            sse_handler.send('validation_result', data=validation_data)
+            
+            # Set up variables for KM search
+            correction = validation_result.correction
+            validation_keywords = validation_result.keywords
 
         # Send KM search start status
-        sse_handler.send('status', message='Starting knowledge management search')
+        sse_handler.send('status', message=SSEStatus.SEARCHING_KM)
 
-        # Step 2: Perform KM batch search using the validation result
+        # Step 2: Perform KM batch search using the validation/provided data
         search_queries: List[str] = []
         
         # Add correction (main query)
-        if validation_result.correction:
-            search_queries.append(validation_result.correction)
+        if correction:
+            search_queries.append(correction)
         
         # add keywords to search queries
-        if validation_result.keywords:
-            for keyword in validation_result.keywords:
+        if validation_keywords:
+            for keyword in validation_keywords:
                 if keyword.strip():
                     search_queries.append(keyword.strip())
         
@@ -210,12 +518,29 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
 
         # convert unique_queries into 1 string separated by space
         query_string = ' '.join(unique_queries)
+        # Get the assistantKey for the current language from org config
+        assistant_key = None
+        for localization in org_config.localization:
+            if localization.language == language:
+                assistant_key = localization.assistantKey
+                break
+        
+        if not assistant_key:
+            # Fallback to default primary language if current language not found
+            for localization in org_config.localization:
+                if localization.language == org_config.defaultPrimaryLanguage:
+                    assistant_key = localization.assistantKey
+                    break
+        
+        if not assistant_key:
+            raise ValueError(f"No assistantKey found for language {language} or default language {org_config.defaultPrimaryLanguage}")
+        
         # Perform KM batch search using org config
         km_request = KMBatchSearchRequest(
             queries=[query_string],
             language=language,
             km_id=org_config.kmId,
-            km_token=config.ASAP_KM_TOKEN,
+            km_token=assistant_key,
             max_results=10
         )
         
@@ -225,14 +550,31 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         # Send KM search result
         sse_handler.send('km_result', data=km_result.dict())
 
-        # Send answer generation start status
-        sse_handler.send('status', message='Starting answer generation with OpenAI')
+        # Check if we should skip answer generation
+        if not generate_answer:
+            logger.info("Skipping answer generation as generate_answer is False")
+            sse_handler.send('status', message=SSEStatus.COMPLETE)
+            # Mark components as complete to properly end the flow
+            if 'text_generation' in sse_handler._completion_registry:
+                sse_handler.mark_component_complete('text_generation')
+            if 'tts_processing' in sse_handler._completion_registry:
+                sse_handler.mark_component_complete('tts_processing')
+            return
 
+        # Send answer generation start status
+        sse_handler.send('status', message=SSEStatus.GENERATING_ANSWER)
+
+
+        # Play wait audio after validation completion
+        sse_handler.playAudio('wait2.mp3')
+        
         # Step 3: Generate answer using OpenAI GPT with streaming
         generation_request = OpenAIGenerationRequest(
-            org_config_id=org_id,
-            question=validation_result.correction,
-            chat_history=chat_history
+            org_id=org_id,
+            config_id=config_id,
+            question=correction,  # Use the correction from validation or transcript
+            chat_history=chat_history,
+            language=language
         )
         
         # Helper function to send answer chunk and to TTS
@@ -321,6 +663,22 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                 
                 # Handle answer section
                 elif current_section == "answer":
+                    # Check for {#NXENDX#} marker first
+                    if "{#NXENDX#}" in chunk:
+                        # Process content before the marker
+                        nxend_index = chunk.find("{#NXENDX#}")
+                        content_before_nxend = pending_bracket_buffer + chunk[:nxend_index]
+                        
+                        if content_before_nxend.strip():
+                            send_answer_chunk(content_before_nxend.strip())
+                        
+                        # Send SESSION_END status
+                        sse_handler.send('status', message=SSEStatus.SESSION_ENDED)
+                        logger.info("SESSION_ENDED status sent due to {#NXENDX#} marker found in answer section")
+                        current_section = "session_end"
+                        pending_bracket_buffer = ""
+                        continue
+                    
                     # Handle any pending bracket buffer first
                     content_to_process = pending_bracket_buffer + chunk
                     pending_bracket_buffer = ""
@@ -364,21 +722,110 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                 # Handle metadata section
                 elif current_section == "metadata":
                     metadata_content += chunk
+                
+                # Handle session end section - skip all remaining content
+                elif current_section == "session_end":
+                    continue
             
             # Handle any remaining pending bracket buffer
             if pending_bracket_buffer.strip():
-                # If we have pending bracket content, treat it as answer content
-                send_answer_chunk(pending_bracket_buffer.strip())
+                # Check for {#NXENDX#} in pending content
+                if "{#NXENDX#}" in pending_bracket_buffer:
+                    # Send content before the marker
+                    nxend_index = pending_bracket_buffer.find("{#NXENDX#}")
+                    content_before_nxend = pending_bracket_buffer[:nxend_index]
+                    
+                    if content_before_nxend.strip():
+                        send_answer_chunk(content_before_nxend.strip())
+                    
+                    # Send SESSION_END status
+                    sse_handler.send('status', message=SSEStatus.SESSION_ENDED)
+                    logger.info("SESSION_ENDED status sent due to {#NXENDX#} marker found in pending buffer")
+                else:
+                    # If we have pending bracket content, treat it as answer content
+                    send_answer_chunk(pending_bracket_buffer.strip())
             
-            # Send metadata if we collected any
-            if metadata_content.strip():
+            # Prioritize quickreply metadata if available, otherwise use generated metadata
+            if quickreply_metadata_only:
+                try:
+                    metadata = quickreply_metadata_only
+                    # If metadata is a string, try to parse it as JSON
+                    if isinstance(metadata, str):
+                        try:
+                            metadata = json.loads(metadata)
+                        except json.JSONDecodeError:
+                            # If it's not valid JSON, send as raw content
+                            metadata = {'raw': metadata}
+                    
+                    sse_handler.send('metadata', data=metadata)
+                    logger.info(f"Sent quickreply metadata from normal flow: {metadata}")
+                except Exception as e:
+                    logger.warning(f"Failed to send quickreply metadata in normal flow: {str(e)}")
+            # Send generated metadata if we collected any and no quickreply metadata
+            elif metadata_content.strip():
                 try:
                     json_match = re.search(r'\{[^}]+\}', metadata_content)
                     if json_match:
                         metadata_json = json.loads(json_match.group())
-                        sse_handler.send('metadata', data=metadata_json)
-                except json.JSONDecodeError:
-                    sse_handler.send('metadata', data={'raw': metadata_content.strip()})
+                        
+                        # Check if metadata has the expected doc-ids key
+                        if 'doc-ids' in metadata_json:
+                            # Extract relevant data from KM results based on metadata doc-ids
+                            relevant_data = extract_relevant_km_data(metadata_json, km_result)
+                            
+                            # Send the simplified relevant data object directly
+                            sse_handler.send('metadata', data=relevant_data)
+                            logger.info(f"Sent simplified metadata with {len(relevant_data.get('items', []))} relevant data items")
+                        else:
+                            # Try to extract doc IDs from any string values in the JSON
+                            doc_ids = []
+                            for key, value in metadata_json.items():
+                                if isinstance(value, str):
+                                    # Look for doc-like patterns in the string
+                                    doc_matches = re.findall(r'doc[-_]?\w+', value)
+                                    doc_ids.extend(doc_matches)
+                            
+                            if doc_ids:
+                                # Create a normalized metadata format
+                                normalized_metadata = {'doc-ids': ','.join(doc_ids)}
+                                relevant_data = extract_relevant_km_data(normalized_metadata, km_result)
+                                sse_handler.send('metadata', data=relevant_data)
+                                logger.info(f"Sent metadata with extracted doc-ids from malformed JSON: {doc_ids}")
+                            else:
+                                # No doc IDs found, send raw metadata
+                                sse_handler.send('metadata', data={'raw': metadata_content.strip()})
+                                logger.info("No doc-ids found in metadata JSON, sent raw content")
+                    else:
+                        # No JSON found, try to extract doc IDs from raw text
+                        doc_matches = re.findall(r'doc[-_]?\w+', metadata_content)
+                        if doc_matches:
+                            # Create metadata format from extracted doc IDs
+                            normalized_metadata = {'doc-ids': ','.join(doc_matches)}
+                            relevant_data = extract_relevant_km_data(normalized_metadata, km_result)
+                            sse_handler.send('metadata', data=relevant_data)
+                            logger.info(f"Sent metadata with doc-ids extracted from raw text: {doc_matches}")
+                        else:
+                            # Send raw metadata content as fallback
+                            sse_handler.send('metadata', data={'raw': metadata_content.strip()})
+                            logger.info("No doc-ids found in raw metadata, sent raw content")
+                except json.JSONDecodeError as e:
+                    # Try to extract doc IDs from the raw content even if JSON parsing failed
+                    doc_matches = re.findall(r'doc[-_]?\w+', metadata_content)
+                    if doc_matches:
+                        # Create metadata format from extracted doc IDs
+                        normalized_metadata = {'doc-ids': ','.join(doc_matches)}
+                        relevant_data = extract_relevant_km_data(normalized_metadata, km_result)
+                        sse_handler.send('metadata', data=relevant_data)
+                        logger.info(f"Sent metadata with doc-ids extracted from malformed JSON: {doc_matches}")
+                    else:
+                        # Send raw metadata content as final fallback
+                        sse_handler.send('metadata', data={'raw': metadata_content.strip()})
+                        logger.info("Failed to parse JSON and extract doc-ids, sent raw content")
+            
+            # Check for {#NXENDX#} after metadata and send SESSION_ENDED
+            if metadata_content and "{#NXENDX#}" in metadata_content:
+                sse_handler.send('status', message=SSEStatus.SESSION_ENDED)
+                logger.info("SESSION_ENDED status sent due to {#NXENDX#} marker found after metadata")
             
             logger.info("Streaming answer generation completed")
             
@@ -402,11 +849,15 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             # Mark text generation as complete after TTS flush
             sse_handler.mark_component_complete('text_generation')
             
+            # Send completion status
+            sse_handler.send('status', message=SSEStatus.COMPLETE)
+            
         except Exception as e:
             logger.error(f"Error during streaming generation: {str(e)}")
             # print stack trace for debugging
             import traceback
             logger.error(traceback.format_exc())
+            sse_handler.send('status', message=SSEStatus.ERROR)
             sse_handler.send_error(f"Streaming generation failed: {str(e)}")
             raise e
 
@@ -414,6 +865,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
 
     except RequestException as e:
         logger.error(f"Request error: {str(e)}")
+        sse_handler.send('status', message=SSEStatus.ERROR)
         sse_handler.send_error(f"Request failed: {str(e)}")
         # Mark components as complete to avoid hanging
         if 'text_generation' in sse_handler._completion_registry:
@@ -422,6 +874,11 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             sse_handler.mark_component_complete('tts_processing')
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
+        # print traceback for debugging
+        import traceback
+        logger.error(traceback.format_exc())
+        # Send error status and message
+        sse_handler.send('status', message=SSEStatus.ERROR)
         sse_handler.send_error(f"Answer generation failed: {str(e)}")
         # Mark components as complete to avoid hanging
         if 'text_generation' in sse_handler._completion_registry:
@@ -430,14 +887,14 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             sse_handler.mark_component_complete('tts_processing')
 
 
-def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: str, org_id: str, chat_history: List[ChatMessage]):
+def _execute_answer_pipeline_sync_wrapper(sse_handler: SSEHandler, transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage], keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None, generate_answer: bool = True):
     """
     Synchronous wrapper for the async background function
     """
-    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id, chat_history))
+    asyncio.run(_execute_answer_pipeline_background(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords, transcript_confidence, generate_answer))
 
 
-def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, org_id: str, chat_history: List[ChatMessage] = None) -> Generator[str, None, None]:
+def execute_answer_flow_sse(transcript: str, language: str, base64_audio: Optional[str], org_id: str, config_id: str, chat_history: List[ChatMessage] = None, keywords: Optional[List[str]] = None, transcript_confidence: Optional[float] = None, generate_answer: bool = True) -> Generator[str, None, None]:
     """
     Execute the complete answer pipeline with Server-Sent Events.
     Validates with Gemini, searches KM, then generates answer with OpenAI GPT.
@@ -449,9 +906,13 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, o
     Args:
         transcript: The user's transcript
         language: The language of the transcript
-        base64_audio: Base64 encoded audio data
-        org_id: Organization configuration ID
+        base64_audio: Base64 encoded audio data (optional, for text-only requests can be None)
+        org_id: Organization ID (partition key)
+        config_id: Configuration ID within the organization
         chat_history: Previous conversation history (optional)
+        keywords: If provided, skip validation and use these keywords directly (optional)
+        transcript_confidence: Confidence score of the transcript (optional)
+        generate_answer: If False, end flow after KM search results are returned (optional, default True)
         
     Yields:
         SSE formatted strings containing progress updates and results
@@ -461,11 +922,20 @@ def execute_answer_flow_sse(transcript: str, language: str, base64_audio: str, o
     
     # Create SSE handler
     sse_handler = SSEHandler()
-    
+    logger.info("Executing answer flow with SSE with parameters: %s", {
+        "transcript": transcript,
+        "language": language,
+        "org_id": org_id,
+        "config_id": config_id,
+        "chat_history": chat_history,
+        "keywords": keywords,
+        "transcript_confidence": transcript_confidence,
+        "generate_answer": generate_answer
+    })
     # Start the background thread to execute the pipeline
     pipeline_thread = threading.Thread(
         target=_execute_answer_pipeline_sync_wrapper,
-        args=(sse_handler, transcript, language, base64_audio, org_id, chat_history),
+        args=(sse_handler, transcript, language, base64_audio, org_id, config_id, chat_history, keywords, transcript_confidence, generate_answer),
         daemon=True
     )
     pipeline_thread.start()
