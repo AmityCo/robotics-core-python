@@ -280,6 +280,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         
         # Check for quickreply before processing anything
         quickreply_result = None
+        quickreply_metadata_only = None
         try:
             logger.info("Checking for quickreply...")
             quickreply_payload = {
@@ -297,11 +298,22 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             
             if quickreply_response.status_code == 200:
                 quickreply_data = quickreply_response.json()
-                if quickreply_data and quickreply_data.get('script'):
-                    quickreply_result = quickreply_data
-                    logger.info(f"Quickreply found: {quickreply_result.get('query', '')}")
+                if quickreply_data:
+                    script = quickreply_data.get('script', '').strip()
+                    metadata = quickreply_data.get('metadata')
+                    
+                    if script:
+                        # Full quickreply with script - use quickreply flow
+                        quickreply_result = quickreply_data
+                        logger.info(f"Quickreply with script found: {quickreply_result.get('query', '')}")
+                    elif metadata:
+                        # Quickreply with only metadata - use normal flow but preserve metadata
+                        quickreply_metadata_only = metadata
+                        logger.info(f"Quickreply with metadata only found - will use normal flow with preserved metadata")
+                    else:
+                        logger.info("No quickreply script or metadata found - proceeding with normal flow")
                 else:
-                    logger.info("No quickreply found - proceeding with normal flow")
+                    logger.info("No quickreply data found - proceeding with normal flow")
             else:
                 logger.warning(f"Quickreply API returned status {quickreply_response.status_code}")
                 
@@ -309,7 +321,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             logger.warning(f"Failed to check quickreply: {str(e)}")
             # Continue with normal flow if quickreply check fails
         
-        # If quickreply found, skip validation and KM search, go directly to answer generation
+        # If quickreply found with script, skip validation and KM search, go directly to answer generation
         if quickreply_result:
             logger.info("Using quickreply script - skipping validation and KM search")
             sse_handler.send('status', message=SSEStatus.GENERATING_ANSWER)
@@ -351,9 +363,22 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                 # Send the script content as a single chunk if no <break/> tags
                 send_answer_chunk(script_content)
             
-            # Send metadata if present
-            #if quickreply_result.get('metadata'):
-            #sse_handler.send('metadata', data=quickreply_result['metadata'])
+            # Send metadata if present in quickreply result
+            if quickreply_result.get('metadata'):
+                try:
+                    metadata = quickreply_result['metadata']
+                    # If metadata is a string, try to parse it as JSON
+                    if isinstance(metadata, str):
+                        try:
+                            metadata = json.loads(metadata)
+                        except json.JSONDecodeError:
+                            # If it's not valid JSON, send as raw content
+                            metadata = {'raw': metadata}
+                    
+                    sse_handler.send('metadata', data=metadata)
+                    logger.info(f"Sent quickreply metadata: {metadata}")
+                except Exception as e:
+                    logger.warning(f"Failed to send quickreply metadata: {str(e)}")
             
             # Flush TTS and complete
             if tts_streamer:
@@ -780,6 +805,23 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                         # Send raw metadata content as final fallback
                         sse_handler.send('metadata', data={'raw': metadata_content.strip()})
                         logger.info("Failed to parse JSON and extract doc-ids, sent raw content")
+            
+            # Check if we have quickreply metadata to use instead of or in addition to generated metadata
+            elif quickreply_metadata_only:
+                try:
+                    metadata = quickreply_metadata_only
+                    # If metadata is a string, try to parse it as JSON
+                    if isinstance(metadata, str):
+                        try:
+                            metadata = json.loads(metadata)
+                        except json.JSONDecodeError:
+                            # If it's not valid JSON, send as raw content
+                            metadata = {'raw': metadata}
+                    
+                    sse_handler.send('metadata', data=metadata)
+                    logger.info(f"Sent quickreply metadata from normal flow: {metadata}")
+                except Exception as e:
+                    logger.warning(f"Failed to send quickreply metadata in normal flow: {str(e)}")
             
             # Check for {#NXENDX#} after metadata and send SESSION_ENDED
             if metadata_content and "{#NXENDX#}" in metadata_content:
