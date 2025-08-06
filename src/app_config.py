@@ -27,6 +27,7 @@ class AppConfig:
     GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
     OPENAI_API_BASE_URL = "https://api.openai.com/v1"
     AMITY_KM_API_URL = "https://api.amitysolutions.com/api/v1/km/search"
+    QUICKREPLY_API_URL = os.getenv("QUICKREPLY_API_URL", "https://api.amityrobotics.com/v1/quickreplies/query")
     
     # AWS settings
     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
@@ -36,8 +37,17 @@ class AppConfig:
     DYNAMODB_TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME", "RoboticConfigureTable-prod")
     DYNAMODB_REGION = os.getenv("DYNAMODB_REGION", "ap-southeast-1")
     
+    # Azure Storage settings for TTS caching
+    AZURE_STORAGE_ACCOUNT_NAME = os.getenv("AZURE_STORAGE_ACCOUNT_NAME", "")
+    AZURE_STORAGE_ACCOUNT_KEY = os.getenv("AZURE_STORAGE_ACCOUNT_KEY", "")
+    AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
+    TTS_CACHE_CONTAINER_NAME = os.getenv("TTS_CACHE_CONTAINER_NAME", "tts-cache")
+    
     # KM API settings
     ASAP_KM_TOKEN = os.getenv("ASAP_KM_TOKEN", "")
+    
+    # Azure Application Insights settings
+    APPLICATIONINSIGHTS_CONNECTION_STRING = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
     
     @classmethod
     def get_cors_settings(cls) -> Dict[str, Any]:

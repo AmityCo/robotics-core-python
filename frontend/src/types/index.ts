@@ -19,9 +19,13 @@ export interface ChatMessage {
 export interface AnswerRequest {
   transcript: string;
   language: string;
-  base64_audio: string;
+  base64_audio?: string;  // Made optional to support text-only requests
   org_id: string;
+  config_id: string;
   chat_history?: ChatMessage[];
+  keywords?: string[];    // Optional - skip validation if provided
+  transcript_confidence?: number; // Optional - confidence level for transcript validation
+  generate_answer?: boolean; // Optional - if false, end flow after KM search (default: true)
 }
 
 // Local Storage Types
@@ -29,6 +33,7 @@ export interface SavedRequest {
   transcript: string;
   language: string;
   org_id: string;
+  config_id: string;
   chat_history: ChatMessage[];
   timestamp: string;
 }
@@ -58,6 +63,11 @@ export interface TranscriptInputProps {
 }
 
 export interface OrgIdInputProps {
+  value: string;
+  onChange: (value: string) => void;
+}
+
+export interface ConfigIdInputProps {
   value: string;
   onChange: (value: string) => void;
 }

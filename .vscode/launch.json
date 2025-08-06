@@ -5,7 +5,7 @@
             "name": "Launch ARC2 Python Server",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/src/main.py",
+            "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
@@ -17,7 +17,7 @@
             "args": [],
             "justMyCode": false,
             "stopOnEntry": false,
-            "python": "${command:python.interpreterPath}",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "presentation": {
                 "hidden": false,
                 "group": "ARC2 Server",
@@ -28,7 +28,7 @@
             "name": "Launch ARC2 Python Server (Production Mode)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/src/main.py",
+            "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
@@ -40,7 +40,7 @@
             "args": [],
             "justMyCode": false,
             "stopOnEntry": false,
-            "python": "${command:python.interpreterPath}",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "presentation": {
                 "hidden": false,
                 "group": "ARC2 Server",
@@ -60,7 +60,7 @@
             "args": [],
             "justMyCode": false,
             "stopOnEntry": false,
-            "python": "${command:python.interpreterPath}",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "presentation": {
                 "hidden": false,
                 "group": "Testing",
@@ -80,7 +80,7 @@
             "args": [],
             "justMyCode": false,
             "stopOnEntry": false,
-            "python": "${command:python.interpreterPath}",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "presentation": {
                 "hidden": false,
                 "group": "Demo",
@@ -100,7 +100,7 @@
             "args": [],
             "justMyCode": false,
             "stopOnEntry": false,
-            "python": "${command:python.interpreterPath}",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "presentation": {
                 "hidden": false,
                 "group": "Demo",
@@ -120,7 +120,7 @@
             "args": [],
             "justMyCode": false,
             "stopOnEntry": false,
-            "python": "${command:python.interpreterPath}",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "presentation": {
                 "hidden": false,
                 "group": "Demo",

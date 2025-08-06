@@ -18,12 +18,13 @@ from src.models import ChatMessage
 
 logger = logging.getLogger(__name__)
 
-def _load_org_config_sync(config_id: str):
+def _load_org_config_sync(org_id: str, config_id: str):
     """Synchronous wrapper for async load_org_config function"""
-    return asyncio.run(load_org_config(config_id))
+    return asyncio.run(load_org_config(org_id, config_id))
 
 class OpenAIGenerationRequest(BaseModel):
-    org_config_id: str
+    org_id: str  # Organization ID (partition key)
+    config_id: str  # Configuration ID within the organization
     question: str
     language: Optional[str] = None  # Language code (e.g., 'en-US', 'th-TH') - if not provided, uses default
     chat_history: List[ChatMessage] = []  # Previous conversation history
@@ -49,12 +50,12 @@ def stream_answer_with_openai(
     Stream answer generation using OpenAI GPT with KM search results and validation data.
     Yields chunks of text as they are generated.
     """
-    logger.info(f"Starting streaming OpenAI generation for org config: {request.org_config_id}")
+    logger.info(f"Starting streaming OpenAI generation for org: {request.org_id}, config: {request.config_id}")
     
     # Load organization configuration
-    org_config = _load_org_config_sync(request.org_config_id)
+    org_config = _load_org_config_sync(request.org_id, request.config_id)
     if not org_config:
-        raise ValueError(f"Organization configuration not found for ID: {request.org_config_id}")
+        raise ValueError(f"Organization configuration not found for orgId: {request.org_id}, configId: {request.config_id}")
     
     # Delegate to the function that accepts org_config
     yield from stream_answer_with_openai_with_config(request, km_result, org_config)
@@ -69,7 +70,7 @@ def stream_answer_with_openai_with_config(
     Stream answer generation using OpenAI GPT with KM search results and pre-loaded org config.
     Yields chunks of text as they are generated.
     """
-    logger.info(f"Starting streaming OpenAI generation for org config: {request.org_config_id}")
+    logger.info(f"Starting streaming OpenAI generation for org: {request.org_id}, config: {request.config_id}")
     
     # Get OpenAI and Generator configurations
     openai_config = org_config.openai
@@ -94,7 +95,7 @@ def stream_answer_with_openai_with_config(
     # Use config values with optional overrides from request
     model = "gpt-4.1-mini" if not request.model else request.model
     api_key = request.openai_api_key or openai_config.apiKey
-    temperature = request.temperature if request.temperature is not None else 0.7
+    temperature = request.temperature if request.temperature is not None else 0.01
     max_tokens = request.max_tokens or 2048
     
     logger.info(f"Using OpenAI model: {model}")
@@ -149,7 +150,7 @@ def stream_answer_with_openai_with_config(
     
     # Replace {context} and {current_time} placeholders in system prompt
     current_time = datetime.now().isoformat()
-    system_prompt = system_prompt.replace("{context}", km_context).replace("{current_time}", current_time)
+    # system_prompt = system_prompt.replace("{context}", km_context).replace("{current_time}", current_time)
     # Replace {question} placeholder in user prompt
     user_prompt = user_prompt.replace("{question}", request.question)
 
@@ -158,6 +159,10 @@ def stream_answer_with_openai_with_config(
         {
             "role": "system",
             "content": system_prompt
+        },
+        {
+            "role": "system",
+            "content": "Context: "+km_context+" \nCurrent Time: "+current_time
         }
     ]
     
@@ -188,7 +193,8 @@ def stream_answer_with_openai_with_config(
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "stream": True  # Enable streaming
+        "stream": True,  # Enable streaming
+        "stream_options": {"include_usage": True}
     }
 
     logger.info(f"Calling OpenAI API with streaming for model: {model}")
@@ -213,6 +219,7 @@ def stream_answer_with_openai_with_config(
     for line in response.iter_lines():
         if line:
             line = line.decode('utf-8')
+            logger.debug(f"OpenAI response line: {line}")
             if line.startswith('data: '):
                 data_str = line[6:]  # Remove 'data: ' prefix
                 if data_str.strip() == '[DONE]':

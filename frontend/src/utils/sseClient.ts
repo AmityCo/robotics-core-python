@@ -4,8 +4,6 @@ import { AnswerRequest } from '../types';
  * SSE Client for handling Server-Sent Events from the ARC2 API
  */
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
-
 interface SSEEventSource {
   onmessage: ((event: MessageEvent) => void) | null;
   onerror: ((error: Event | Error) => void) | null;
@@ -16,17 +14,21 @@ interface SSEEventSource {
   readyState: number;
 }
 
-export const sendSSERequest = async (requestData: AnswerRequest): Promise<SSEEventSource> => {
-  const { transcript, language, base64_audio, org_id, chat_history } = requestData;
+export const sendSSERequest = async (requestData: AnswerRequest, apiBaseUrl: string): Promise<SSEEventSource> => {
+  const { transcript, language, base64_audio, org_id, config_id, chat_history, keywords, transcript_confidence, generate_answer } = requestData;
 
-  // Validate required fields
-  if (!transcript || !org_id || !base64_audio) {
-    throw new Error('Missing required fields: transcript, org_id, and base64_audio are required');
+  // Validate required fields (base64_audio is now optional)
+  if (!transcript || !org_id || !config_id) {
+    throw new Error('Missing required fields: transcript, org_id, and config_id are required');
+  }
+
+  if (!apiBaseUrl) {
+    throw new Error('API base URL is required');
   }
 
   try {
     // Use fetch with streaming for SSE
-    const response = await fetch(`${API_BASE_URL}/api/v1/answer-sse`, {
+    const response = await fetch(`${apiBaseUrl}/api/v1/answer-sse`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -36,9 +38,13 @@ export const sendSSERequest = async (requestData: AnswerRequest): Promise<SSEEve
       body: JSON.stringify({
         transcript,
         language,
-        base64_audio,
+        ...(base64_audio && { base64_audio }),  // Only include if present
         org_id,
-        chat_history: chat_history || []
+        config_id,
+        chat_history: chat_history || [],
+        ...(keywords !== undefined && { keywords }),  // Include keywords if provided (even if empty array)
+        ...(transcript_confidence !== undefined && { transcript_confidence }), // Include transcript_confidence if provided
+        ...(generate_answer !== undefined && { generate_answer }) // Include generate_answer if provided
       })
     });
 
@@ -124,7 +130,7 @@ export const sendSSERequest = async (requestData: AnswerRequest): Promise<SSEEve
               const event: MessageEvent = new MessageEvent('message', {
                 data: data,
                 lastEventId: '',
-                origin: API_BASE_URL,
+                origin: apiBaseUrl,
               });
 
               // Call the message handler
@@ -158,12 +164,12 @@ export const sendSSERequest = async (requestData: AnswerRequest): Promise<SSEEve
  * Alternative implementation using EventSource (if the server supports CORS properly)
  * This is kept as a fallback or for future use
  */
-export const sendSSERequestWithEventSource = (requestData: AnswerRequest): EventSource => {
+export const sendSSERequestWithEventSource = (requestData: AnswerRequest, apiBaseUrl: string): EventSource => {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { transcript, language, base64_audio, org_id } = requestData;
 
   // Create URL with query parameters (GET-style)
-  const url = new URL(`${API_BASE_URL}/api/v1/answer-sse`);
+  const url = new URL(`${apiBaseUrl}/api/v1/answer-sse`);
   
   // Note: EventSource only supports GET requests, so we'd need to modify the backend
   // to accept parameters via query string or use a different approach

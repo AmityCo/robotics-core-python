@@ -185,6 +185,8 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
         .replace(/<\/s>/g, '')
         // Remove [meta:docs] content
         .replace(/\[meta:docs\].*$/, '')
+        // Remove {#NXENDX#} markers
+        .replace(/\{#NXENDX#\}/g, '')
         // Fix common UTF-8 encoding issues for Thai characters
         .replace(/Ã /g, 'อ')
         .replace(/Ã¸/g, 'อ')
@@ -212,6 +214,7 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
       return content
         .replace(/<\/s>/g, '')
         .replace(/\[meta:docs\].*$/, '')
+        .replace(/\{#NXENDX#\}/g, '')
         .trim();
     }
   };
@@ -233,7 +236,8 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
     else if (message.data) {
       switch (message.type) {
         case 'validation_result':
-          content = `Validation: ${message.data.correction || 'Processing validation...'}`;
+          // Display the full JSON object for validation results
+          content = JSON.stringify(message.data, null, 2);
           break;
         
         case 'km_result':
@@ -268,7 +272,27 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
           if (audioData.audio_data && !playedAudioIds.current.has(message.id)) {
             playedAudioIds.current.add(message.id);
             audioQueue.current.push({ id: message.id, audioData });
-            console.log('Added audio to queue:', audioData.text, 'Queue length:', audioQueue.current.length);
+            console.log('Added audio to queue:', audioData.text, 'Queue length:', audioQueue.current.length, " isPlaying:", isPlayingAudio.current);
+            // Trigger queue processing
+            processAudioQueue();
+          }
+          break;
+        
+        case 'audio':
+          const waitAudioData = message.data;
+          content = `🔊 Wait Audio (${(waitAudioData.audio_size / 1024).toFixed(1)}KB, ${waitAudioData.audio_format})`;
+          console.log('Received wait audio:', {
+            format: waitAudioData.audio_format,
+            audioDataLength: waitAudioData.audio_data?.length,
+            audioSize: waitAudioData.audio_size
+          });
+          // Add to audio queue only if not already played
+          if (waitAudioData.audio_data && !playedAudioIds.current.has(message.id)) {
+            playedAudioIds.current.add(message.id);
+            // Add text property for queue processing compatibility
+            const audioDataWithText = { ...waitAudioData, text: 'Wait audio' };
+            audioQueue.current.push({ id: message.id, audioData: audioDataWithText });
+            console.log('Added wait audio to queue, Queue length:', audioQueue.current.length, " isPlaying:", isPlayingAudio.current);
             // Trigger queue processing
             processAudioQueue();
           }
@@ -300,8 +324,12 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
         return 'bg-gray-50 border-gray-200';
       case 'tts_audio':
         return 'bg-indigo-50 border-indigo-200';
+      case 'audio':
+        return 'bg-orange-50 border-orange-200';
       case 'complete':
         return 'bg-green-100 border-green-300';
+      case 'session_end':
+        return 'bg-red-50 border-red-200';
       default:
         return 'bg-blue-50 border-blue-200';
     }
@@ -337,7 +365,9 @@ const SSEOutput = ({ messages, isProcessing }: SSEOutputProps) => {
                   </span>
                 </div>
                 <div className="text-sm text-gray-800">
-                  <div className="whitespace-pre-wrap">
+                  <div className={`whitespace-pre-wrap ${
+                    message.type === 'validation_result' ? 'font-mono bg-gray-50 p-2 rounded border text-xs' : ''
+                  }`}>
                     {renderMessageContent(message)}
                   </div>
                 </div>

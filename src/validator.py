@@ -6,7 +6,7 @@ Handles all Gemini API validation operations
 import json
 import logging
 import requests
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 from src.app_config import config
 from src.models import ChatMessage
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class GeminiValidationRequest(BaseModel):
     transcript: str
     language: str
-    base64_audio: str
+    base64_audio: Optional[str] = None  # Made optional to support text-only validation
     validation_system_prompt: str
     validation_user_prompt: str
     model: str
@@ -51,22 +51,27 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
                 "parts": [{"text": message.content}]
             })
     
-    # Add current user message with audio and validation prompt
-    user_parts = [
-        {
+    # Add current user message with validation prompt and optional audio
+    user_parts = []
+    
+    # Add audio if provided
+    if request.base64_audio:
+        user_parts.append({
             "inlineData": {
                 "mimeType": "audio/wav",
                 "data": request.base64_audio,
             }
-        },
-        {"text": request.validation_user_prompt},
-    ]
+        })
+    
+    # Add the validation prompt with transcript included
+    user_parts.append({"text": request.validation_user_prompt
+                       .replace("{transcript}", request.transcript)
+                      .replace("{language}", request.language)})
     
     contents.append({
         "role": "user",
         "parts": user_parts
     })
-
     gemini_request_data = {
         "contents": contents,
         "systemInstruction": {"parts": [{"text": request.validation_system_prompt}]},
@@ -81,26 +86,29 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
                 "type": "object",
                 "properties": {
                     "correction": {"type": "string"},
+                    "chat_history": {"type": "array", "items": {"type": "string"}},
                     "keywords": {"type": "array", "items": {"type": "string"}},
                 },
+                "required": ["correction", "chat_history", "keywords"],
+                "propertyOrdering": ["correction", "chat_history", "keywords"],
             }
         },
         "safetySettings": [
             {
                 "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+                "threshold": "OFF",
             },
             {
                 "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+                "threshold": "OFF",
             },
             {
                 "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+                "threshold": "OFF",
             },
             {
                 "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+                "threshold": "OFF",
             },
         ],
     }
@@ -134,12 +142,27 @@ def validate_with_gemini(request: GeminiValidationRequest) -> GeminiValidationRe
         .get("parts", [{}])[0]
         .get("text")
     ):
-        raise ValueError("No response from Gemini validator")
+        raise ValueError("No response from Gemini validator: ", gemini_data)
 
     response_text = gemini_data["candidates"][0]["content"]["parts"][0]["text"]
 
+    # Clean the response text by removing markdown code block formatting
+    cleaned_response = response_text.strip()
+    
+    # Remove opening markdown tags
+    if cleaned_response.startswith("```json"):
+        cleaned_response = cleaned_response[7:]  # Remove ```json
+    elif cleaned_response.startswith("```"):
+        cleaned_response = cleaned_response[3:]   # Remove ``` (in case it's just ```)
+    
+    # Remove closing markdown tags
+    if cleaned_response.endswith("```"):
+        cleaned_response = cleaned_response[:-3]  # Remove closing ```
+    
+    cleaned_response = cleaned_response.strip()
+
     try:
-        validation_result = json.loads(response_text)
+        validation_result = json.loads(cleaned_response)
         if "correction" not in validation_result:
             raise ValueError("Invalid response format: missing correction field")
 

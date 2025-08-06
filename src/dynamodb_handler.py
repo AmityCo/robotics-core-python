@@ -8,6 +8,7 @@ import boto3
 from typing import Dict, Any, Optional, List
 from botocore.exceptions import ClientError, NoCredentialsError
 from .app_config import config as app_config
+from .telemetry import telemetry_span, add_span_attributes, record_exception
 
 logger = logging.getLogger(__name__)
 
@@ -70,27 +71,41 @@ class DynamoDBHandler:
         Raises:
             ClientError: If there's an error accessing DynamoDB
         """
-        try:
-            table = self._get_dynamodb_table()
-            
-            response = table.get_item(Key=key)
-            
-            if 'Item' not in response:
-                logger.warning(f"No item found for key: {key}")
-                return None
-            
-            item = response['Item']
-            logger.debug(f"Found item for key: {key}")
-            return item
-            
-        except ClientError as e:
-            error_code = e.response['Error']['Code']
-            error_message = e.response['Error']['Message']
-            logger.error(f"DynamoDB error ({error_code}): {error_message}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error getting item: {str(e)}")
-            raise
+        with telemetry_span("dynamodb.get_item", {
+            "db.system": "dynamodb",
+            "db.operation": "get_item",
+            "db.name": self.table_name,
+            "aws.region": self.region_name
+        }) as span:
+            try:
+                table = self._get_dynamodb_table()
+                
+                # Add key information to span
+                add_span_attributes(span, **{f"db.key.{k}": str(v) for k, v in key.items()})
+                
+                response = table.get_item(Key=key)
+                
+                if 'Item' not in response:
+                    logger.warning(f"No item found for key: {key}")
+                    add_span_attributes(span, found=False)
+                    return None
+                
+                item = response['Item']
+                logger.debug(f"Found item for key: {key}")
+                add_span_attributes(span, found=True, item_size=len(str(item)))
+                return item
+                
+            except ClientError as e:
+                error_code = e.response['Error']['Code']
+                error_message = e.response['Error']['Message']
+                logger.error(f"DynamoDB error ({error_code}): {error_message}")
+                record_exception(span, e)
+                add_span_attributes(span, error_code=error_code)
+                raise
+            except Exception as e:
+                logger.error(f"Unexpected error getting item: {str(e)}")
+                record_exception(span, e)
+                raise
     
     async def put_item(self, item: Dict[str, Any]) -> bool:
         """
@@ -105,21 +120,32 @@ class DynamoDBHandler:
         Raises:
             ClientError: If there's an error accessing DynamoDB
         """
-        try:
-            table = self._get_dynamodb_table()
-            
-            table.put_item(Item=item)
-            logger.debug(f"Successfully put item")
-            return True
-            
-        except ClientError as e:
-            error_code = e.response['Error']['Code']
-            error_message = e.response['Error']['Message']
-            logger.error(f"DynamoDB error ({error_code}): {error_message}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error putting item: {str(e)}")
-            raise
+        with telemetry_span("dynamodb.put_item", {
+            "db.system": "dynamodb",
+            "db.operation": "put_item",
+            "db.name": self.table_name,
+            "aws.region": self.region_name
+        }) as span:
+            try:
+                table = self._get_dynamodb_table()
+                
+                add_span_attributes(span, item_size=len(str(item)))
+                
+                table.put_item(Item=item)
+                logger.debug(f"Successfully put item")
+                return True
+                
+            except ClientError as e:
+                error_code = e.response['Error']['Code']
+                error_message = e.response['Error']['Message']
+                logger.error(f"DynamoDB error ({error_code}): {error_message}")
+                record_exception(span, e)
+                add_span_attributes(span, error_code=error_code)
+                raise
+            except Exception as e:
+                logger.error(f"Unexpected error putting item: {str(e)}")
+                record_exception(span, e)
+                raise
     
     async def update_item(self, key: Dict[str, Any], update_expression: str, 
                           expression_attribute_values: Dict[str, Any] = None,
