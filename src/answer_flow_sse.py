@@ -10,7 +10,6 @@ import re
 import asyncio
 import os
 import random
-import requests
 from typing import Generator, Dict, List, Optional
 from requests import RequestException
 
@@ -20,11 +19,13 @@ from src.requests_handler import get as cached_get
 from src.km_search import KMBatchSearchRequest, batch_search_km
 from src.validator import GeminiValidationRequest, validate_with_gemini
 from src.generator import OpenAIGenerationRequest, stream_answer_with_openai_with_config
+from src.generator_parser import create_parser
 from src.org_config import load_org_config
 from src.tts_stream import TTSStreamer
 from src.models import ChatMessage, SSEStatus
 from src.km_data_formatter import extract_relevant_km_data
 from src.audio_helper import AudioProcessor
+from src.quickreply_manager import query_quickreply, process_quickreply_script, split_script_into_chunks
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -258,7 +259,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
         sse_handler.register_component('text_generation')
         
         try:
-            def tts_audio_callback(text: str, audio_data: bytes):
+            def tts_audio_callback(text: str, audio_data: bytes, order: int):
                 """Callback for when TTS audio is ready"""
                 tts_audio_data = {
                     'text': text,
@@ -267,8 +268,8 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                     'audio_data': base64.b64encode(audio_data).decode('utf-8'),
                     'audio_format': 'raw-16khz-16bit-mono-pcm'
                 }
-                sse_handler.send('tts_audio', data=tts_audio_data)
-                logger.info(f"TTS audio sent for text: '{text[:50]}...' (language: {language}, size: {len(audio_data)} bytes)")
+                sse_handler.send('tts_audio', data=tts_audio_data, order=order)
+                logger.info(f"TTS audio sent for text: '{text[:50]}...' (language: {language}, size: {len(audio_data)} bytes, order: {order})")
             
             tts_streamer = TTSStreamer(org_config, language, audio_callback=tts_audio_callback)
             await tts_streamer.initialize()
@@ -279,58 +280,22 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             tts_streamer = None
         
         # Check for quickreply before processing anything
-        quickreply_result = None
-        quickreply_metadata_only = None
-        try:
-            logger.info("Checking for quickreply...")
-            quickreply_payload = {
-                "configId": config_id,
-                "query": transcript,
-                "language": language
-            }
-            
-            quickreply_response = requests.post(
-                config.QUICKREPLY_API_URL,
-                json=quickreply_payload,
-                headers={'Content-Type': 'application/json'},
-                timeout=config.REQUEST_TIMEOUT
-            )
-            
-            if quickreply_response.status_code == 200:
-                quickreply_data = quickreply_response.json()
-                if quickreply_data:
-                    script = quickreply_data.get('script', '').strip()
-                    metadata = quickreply_data.get('metadata')
-                    
-                    if script:
-                        # Full quickreply with script - use quickreply flow
-                        quickreply_result = quickreply_data
-                        logger.info(f"Quickreply with script found: {quickreply_result.get('query', '')}")
-                    elif metadata:
-                        # Quickreply with only metadata - use normal flow but preserve metadata
-                        quickreply_metadata_only = metadata
-                        logger.info(f"Quickreply with metadata only found - will use normal flow with preserved metadata")
-                    else:
-                        logger.info("No quickreply script or metadata found - proceeding with normal flow")
-                else:
-                    logger.info("No quickreply data found - proceeding with normal flow")
-            else:
-                logger.warning(f"Quickreply API returned status {quickreply_response.status_code}")
-                
-        except Exception as e:
-            logger.warning(f"Failed to check quickreply: {str(e)}")
-            # Continue with normal flow if quickreply check fails
+        quickreply_result = await query_quickreply(config_id, transcript, language)
+        
+        # Extract result data for easier access
+        quickreply_data = quickreply_result.data if quickreply_result.has_script else None
+        quickreply_metadata_only = quickreply_result.metadata_only if quickreply_result.has_metadata_only else None
         
         # If quickreply found with script, skip validation and KM search, go directly to answer generation
-        if quickreply_result:
+        if quickreply_result.has_script and quickreply_data:
             logger.info("Using quickreply script - skipping validation and KM search")
             sse_handler.send('status', message=SSEStatus.GENERATING_ANSWER)
             
             # Play wait audio before generating answer
             sse_handler.playAudio('wait2.mp3')
             
-            # Send the quickreply script as answer chunks
-            script_content = quickreply_result['script']
+            # Process the quickreply script and metadata
+            script_content, processed_metadata = process_quickreply_script(quickreply_data)
             
             # Split script into chunks and send them
             def send_answer_chunk(content: str):
@@ -345,40 +310,16 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                         except Exception as e:
                             logger.warning(f"Failed to add text to TTS streamer: {str(e)}")
             
-            # Check if script content contains <break/> tags for chunking (same as existing flow)
-            if '<break/>' in script_content:
-                # Split by <break/> and send each chunk separately
-                chunks = script_content.split('<break/>')
-                logger.info(f"Splitting quickreply script into {len(chunks)} chunks using <break/> delimiter")
-                
-                for i, chunk in enumerate(chunks):
-                    if chunk.strip():  # Only send non-empty chunks
-                        # Add <break/> back to all chunks except the last one to maintain TTS behavior
-                        chunk_content = chunk.strip()
-                        if i < len(chunks) - 1:  # Not the last chunk
-                            chunk_content += '<break/>'
-                        send_answer_chunk(chunk_content)
-                        logger.debug(f"Sent quickreply chunk {i+1}/{len(chunks)}: '{chunk_content[:50]}...'")
-            else:
-                # Send the script content as a single chunk if no <break/> tags
-                send_answer_chunk(script_content)
+            # Get chunks from the manager and send them
+            chunks = split_script_into_chunks(script_content)
+            for i, chunk in enumerate(chunks):
+                send_answer_chunk(chunk)
+                logger.debug(f"Sent quickreply chunk {i+1}/{len(chunks)}: '{chunk[:50]}...'")
             
             # Send metadata if present in quickreply result
-            if quickreply_result.get('metadata'):
-                try:
-                    metadata = quickreply_result['metadata']
-                    # If metadata is a string, try to parse it as JSON
-                    if isinstance(metadata, str):
-                        try:
-                            metadata = json.loads(metadata)
-                        except json.JSONDecodeError:
-                            # If it's not valid JSON, send as raw content
-                            metadata = {'raw': metadata}
-                    
-                    sse_handler.send('metadata', data=metadata)
-                    logger.info(f"Sent quickreply metadata: {metadata}")
-                except Exception as e:
-                    logger.warning(f"Failed to send quickreply metadata: {str(e)}")
+            if processed_metadata:
+                sse_handler.send('metadata', data=processed_metadata)
+                logger.info(f"Sent quickreply metadata: {processed_metadata}")
             
             # Flush TTS and complete
             if tts_streamer:
@@ -566,7 +507,14 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
 
 
         # Play wait audio after validation completion
-        sse_handler.playAudio('wait2.mp3')
+        sse_handler.playAudio('wait1.mp3')
+        
+        # generating_message = "Ok let me see"
+        # if generating_message and tts_streamer:
+        #     logger.info(f"Generating TTS for processing message: '{generating_message}' (language: {language})")
+        #     # Generate TTS for the processing message immediately
+        #     tts_streamer.append_text(generating_message)
+        #     tts_streamer.flush()  # Ensure it gets processed immediately
         
         # Step 3: Generate answer using OpenAI GPT with streaming
         generation_request = OpenAIGenerationRequest(
@@ -590,16 +538,8 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                     except Exception as e:
                         logger.warning(f"Failed to add text to TTS streamer: {str(e)}")
         
-        # Track the full response for parsing
-        full_response = ""
-        current_section = "unknown"
-        thinking_processed = False
-        thinking_content = ""
-        answer_content = ""
-        metadata_content = ""
-        
-        # Buffer for handling potential metadata markers that span multiple chunks
-        pending_bracket_buffer = ""
+        # Create parser for handling the streaming response
+        parser = create_parser(sse_handler, tts_streamer)
         
         try:
             # Stream the response from OpenAI - pass org_config to avoid reloading
@@ -608,163 +548,15 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                 km_result,
                 org_config
             ):
-                full_response += chunk
-                
-                # First, determine the section type if we haven't yet
-                if current_section == "unknown":
-                    if "<thinking>" in full_response:
-                        current_section = "thinking"
-                        continue
-                    elif len(full_response) >= 10:
-                        current_section = "answer"
-                        if "[meta:docs]" in full_response:
-                            parts = full_response.split("[meta:docs]", 1)
-                            if parts[0].strip():
-                                send_answer_chunk(parts[0].strip())
-                            
-                            metadata_content = "[meta:docs]" + parts[1]
-                            current_section = "metadata"
-                        else:
-                            if full_response.strip():
-                                send_answer_chunk(full_response.strip())
-                    else:
-                        continue
-                
-                # Handle thinking section
-                elif current_section == "thinking" and not thinking_processed:
-                    if "</thinking>" in full_response:
-                        thinking_start = full_response.find("<thinking>") + len("<thinking>")
-                        thinking_end = full_response.find("</thinking>")
-                        thinking_content = full_response[thinking_start:thinking_end]
-                        
-                        # Send thinking section once
-                        sse_handler.send('thinking', data={'content': thinking_content})
-                        
-                        thinking_processed = True
-                        current_section = "answer"
-                        
-                        # Process any remaining content after </thinking> as answer
-                        remaining_content = full_response[thinking_end + len("</thinking>"):].strip()
-                        if remaining_content:
-                            if "[meta:docs]" in remaining_content:
-                                meta_start = remaining_content.find("[meta:docs]")
-                                answer_part = remaining_content[:meta_start]
-                                metadata_content = remaining_content[meta_start:]
-                                
-                                if answer_part.strip():
-                                    send_answer_chunk(answer_part.strip())
-                                
-                                current_section = "metadata"
-                            else:
-                                if remaining_content.strip():
-                                    send_answer_chunk(remaining_content.strip())
-                    else:
-                        continue
-                
-                # Handle answer section
-                elif current_section == "answer":
-                    # Check for {#NXENDX#} marker first
-                    if "{#NXENDX#}" in chunk:
-                        # Process content before the marker
-                        nxend_index = chunk.find("{#NXENDX#}")
-                        content_before_nxend = pending_bracket_buffer + chunk[:nxend_index]
-                        
-                        if content_before_nxend.strip():
-                            send_answer_chunk(content_before_nxend.strip())
-                        
-                        # Send SESSION_END status
-                        sse_handler.send('status', message=SSEStatus.SESSION_ENDED)
-                        logger.info("SESSION_ENDED status sent due to {#NXENDX#} marker found in answer section")
-                        current_section = "session_end"
-                        pending_bracket_buffer = ""
-                        continue
-                    
-                    # Handle any pending bracket buffer first
-                    content_to_process = pending_bracket_buffer + chunk
-                    pending_bracket_buffer = ""
-                    
-                    # Check if this chunk contains a bracket that might be metadata
-                    bracket_start = content_to_process.find('[')
-                    
-                    if bracket_start != -1:
-                        # Send any content before the bracket as answer
-                        if bracket_start > 0:
-                            send_answer_chunk(content_to_process[:bracket_start])
-                        
-                        # Buffer content from the bracket onwards
-                        bracket_content = content_to_process[bracket_start:]
-                        
-                        # Check if we have a complete bracketed expression
-                        bracket_end = bracket_content.find(']')
-                        
-                        if bracket_end != -1:
-                            # We have a complete bracketed expression
-                            complete_bracket = bracket_content[:bracket_end + 1]
-                            remaining_content = bracket_content[bracket_end + 1:]
-                            
-                            if complete_bracket.startswith('[meta:docs]'):
-                                # This is metadata, switch to metadata section
-                                metadata_content = complete_bracket + remaining_content
-                                current_section = "metadata"
-                            else:
-                                # This is not metadata, send as answer content
-                                send_answer_chunk(complete_bracket)
-                                # Process any remaining content
-                                if remaining_content:
-                                    send_answer_chunk(remaining_content)
-                        else:
-                            # Incomplete bracket expression, buffer it
-                            pending_bracket_buffer = bracket_content
-                    else:
-                        # No brackets in this chunk, send as answer
-                        send_answer_chunk(content_to_process)
-                
-                # Handle metadata section
-                elif current_section == "metadata":
-                    metadata_content += chunk
-                
-                # Handle session end section - skip all remaining content
-                elif current_section == "session_end":
-                    continue
+                parser.process_chunk(chunk)
             
-            # Handle any remaining pending bracket buffer
-            if pending_bracket_buffer.strip():
-                # Check for {#NXENDX#} in pending content
-                if "{#NXENDX#}" in pending_bracket_buffer:
-                    # Send content before the marker
-                    nxend_index = pending_bracket_buffer.find("{#NXENDX#}")
-                    content_before_nxend = pending_bracket_buffer[:nxend_index]
-                    
-                    if content_before_nxend.strip():
-                        send_answer_chunk(content_before_nxend.strip())
-                    
-                    # Send SESSION_END status
-                    sse_handler.send('status', message=SSEStatus.SESSION_ENDED)
-                    logger.info("SESSION_ENDED status sent due to {#NXENDX#} marker found in pending buffer")
-                else:
-                    # If we have pending bracket content, treat it as answer content
-                    send_answer_chunk(pending_bracket_buffer.strip())
+            # Finalize parsing and handle any remaining content
+            parser.finalize()
             
-            # Prioritize quickreply metadata if available, otherwise use generated metadata
-            if quickreply_metadata_only:
+            # Handle metadata if collected by parser
+            if parser.metadata_content.strip():
                 try:
-                    metadata = quickreply_metadata_only
-                    # If metadata is a string, try to parse it as JSON
-                    if isinstance(metadata, str):
-                        try:
-                            metadata = json.loads(metadata)
-                        except json.JSONDecodeError:
-                            # If it's not valid JSON, send as raw content
-                            metadata = {'raw': metadata}
-                    
-                    sse_handler.send('metadata', data=metadata)
-                    logger.info(f"Sent quickreply metadata from normal flow: {metadata}")
-                except Exception as e:
-                    logger.warning(f"Failed to send quickreply metadata in normal flow: {str(e)}")
-            # Send generated metadata if we collected any and no quickreply metadata
-            elif metadata_content.strip():
-                try:
-                    json_match = re.search(r'\{[^}]+\}', metadata_content)
+                    json_match = re.search(r'\{[^}]+\}', parser.metadata_content)
                     if json_match:
                         metadata_json = json.loads(json_match.group())
                         
@@ -793,11 +585,11 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                                 logger.info(f"Sent metadata with extracted doc-ids from malformed JSON: {doc_ids}")
                             else:
                                 # No doc IDs found, send raw metadata
-                                sse_handler.send('metadata', data={'raw': metadata_content.strip()})
+                                sse_handler.send('metadata', data={'raw': parser.metadata_content.strip()})
                                 logger.info("No doc-ids found in metadata JSON, sent raw content")
                     else:
                         # No JSON found, try to extract doc IDs from raw text
-                        doc_matches = re.findall(r'doc[-_]?\w+', metadata_content)
+                        doc_matches = re.findall(r'doc[-_]?\w+', parser.metadata_content)
                         if doc_matches:
                             # Create metadata format from extracted doc IDs
                             normalized_metadata = {'doc-ids': ','.join(doc_matches)}
@@ -806,11 +598,11 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                             logger.info(f"Sent metadata with doc-ids extracted from raw text: {doc_matches}")
                         else:
                             # Send raw metadata content as fallback
-                            sse_handler.send('metadata', data={'raw': metadata_content.strip()})
+                            sse_handler.send('metadata', data={'raw': parser.metadata_content.strip()})
                             logger.info("No doc-ids found in raw metadata, sent raw content")
                 except json.JSONDecodeError as e:
                     # Try to extract doc IDs from the raw content even if JSON parsing failed
-                    doc_matches = re.findall(r'doc[-_]?\w+', metadata_content)
+                    doc_matches = re.findall(r'doc[-_]?\w+', parser.metadata_content)
                     if doc_matches:
                         # Create metadata format from extracted doc IDs
                         normalized_metadata = {'doc-ids': ','.join(doc_matches)}
@@ -819,11 +611,11 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
                         logger.info(f"Sent metadata with doc-ids extracted from malformed JSON: {doc_matches}")
                     else:
                         # Send raw metadata content as final fallback
-                        sse_handler.send('metadata', data={'raw': metadata_content.strip()})
+                        sse_handler.send('metadata', data={'raw': parser.metadata_content.strip()})
                         logger.info("Failed to parse JSON and extract doc-ids, sent raw content")
             
             # Check for {#NXENDX#} after metadata and send SESSION_ENDED
-            if metadata_content and "{#NXENDX#}" in metadata_content:
+            if parser.metadata_content and "{#NXENDX#}" in parser.metadata_content:
                 sse_handler.send('status', message=SSEStatus.SESSION_ENDED)
                 logger.info("SESSION_ENDED status sent due to {#NXENDX#} marker found after metadata")
             

@@ -32,6 +32,8 @@ class LocalizationConfig(BaseModel):
     validatorSystemPromptTemplateUrl: Optional[str] = None
     validatorModel: Optional[str] = None
     validatorTranscriptConfidenceThreshold: Optional[float] = None
+    generatorModel: Optional[str] = None
+    generatorFormatTextPromptUrl: Optional[str] = None
 
 class GeminiConfig(BaseModel):
     key: str
@@ -41,6 +43,9 @@ class GeminiConfig(BaseModel):
     validatorTranscriptConfidenceThreshold: Optional[float] = None
 
 class OpenAIConfig(BaseModel):
+    apiKey: str
+
+class GroqConfig(BaseModel):
     apiKey: str
 
 class ConversationConfig(BaseModel):
@@ -159,6 +164,7 @@ class OrgConfigData(BaseModel):
     displayLanguageLogic: str
     gemini: GeminiConfig
     openai: OpenAIConfig
+    groq: GroqConfig
     localization: List[LocalizationConfig]
     cameraActivation: CameraActivationConfig
     audio: AudioConfig
@@ -173,6 +179,37 @@ class OrgConfigData(BaseModel):
     theme: ThemeConfig
     feedback: FeedbackConfig
     shelf: ShelfConfig
+
+# Module-level cached function to avoid instance method cache key issues
+@org_config_cache.early(ttl="15m", early_ttl="3m")
+async def _load_config_from_db_cached(table_name: str, region_name: str, org_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Load configuration from DynamoDB with caching (module-level function)
+    
+    Args:
+        table_name: Name of the DynamoDB table
+        region_name: AWS region name
+        org_id: The organization ID to query for (partition key in DynamoDB as configId)
+        
+    Returns:
+        Raw configuration data if found, None if not found
+    """
+    logger.info(f"Cache MISS: Loading organization config from DynamoDB for orgId: {org_id}")
+    
+    # Create DynamoDB handler for this request
+    dynamodb_handler = DynamoDBHandler(table_name=table_name, region_name=region_name)
+    
+    # Query DynamoDB using org_id as configId (the actual partition key)
+    item = await dynamodb_handler.get_item(
+        key={'configId': org_id}
+    )
+    
+    if item is None:
+        logger.warning(f"No configuration found for orgId: {org_id}")
+        return None
+    
+    logger.info(f"Found configuration item for orgId: {org_id}")
+    return item
 
 class OrgConfig:
     """
@@ -194,7 +231,6 @@ class OrgConfig:
         self.region_name = region_name or app_config.DYNAMODB_REGION
         self.dynamodb_handler = DynamoDBHandler(table_name=self.table_name, region_name=self.region_name)
     
-    @org_config_cache.early(ttl="15m", early_ttl="3m")
     async def _load_config_from_db(self, org_id: str) -> Optional[Dict[str, Any]]:
         """
         Load configuration from DynamoDB with caching
@@ -205,19 +241,8 @@ class OrgConfig:
         Returns:
             Raw configuration data if found, None if not found
         """
-        logger.info(f"Loading organization config from DynamoDB for orgId: {org_id}")
-        
-        # Query DynamoDB using org_id as configId (the actual partition key)
-        item = await self.dynamodb_handler.get_item(
-            key={'configId': org_id}
-        )
-        
-        if item is None:
-            logger.warning(f"No configuration found for orgId: {org_id}")
-            return None
-        
-        logger.info(f"Found configuration item for orgId: {org_id}")
-        return item
+        # Delegate to the cached module-level function
+        return await _load_config_from_db_cached(self.table_name, self.region_name, org_id)
     
     async def load_config(self, org_id: str, config_id: str) -> Optional[OrgConfigData]:
         """
@@ -419,6 +444,18 @@ class OrgConfig:
             OpenAIConfig object
         """
         return config.openai
+    
+    def get_groq_config(self, config: OrgConfigData) -> GroqConfig:
+        """
+        Get the Groq configuration
+        
+        Args:
+            config: The organization configuration
+            
+        Returns:
+            GroqConfig object
+        """
+        return config.groq
 
 # Convenience function for quick config loading
 async def load_org_config(org_id: str, config_id: str, table_name: str = None, region_name: str = None) -> Optional[OrgConfigData]:

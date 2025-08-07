@@ -4,6 +4,8 @@ Handles all interactions with Azure Blob Storage for TTS caching.
 """
 import logging
 import asyncio
+import threading
+import concurrent.futures
 from typing import Optional
 from azure.storage.blob import BlobServiceClient, BlobClient
 from azure.core.exceptions import AzureError, ResourceNotFoundError
@@ -65,13 +67,13 @@ class AzureStorageHandler:
     
     def get_cached_audio(self, blob_name: str) -> Optional[bytes]:
         """
-        Retrieve cached audio from Azure Storage
+        Retrieve cached audio from Azure Storage with timeout
         
         Args:
             blob_name: The blob name (e.g., "en-US/neural2/abc123.mp3")
             
         Returns:
-            Audio data as bytes, or None if not found
+            Audio data as bytes, or None if not found or timeout
         """
         with telemetry_span("azure_storage.get_blob", {
             "azure.storage.operation": "get_blob",
@@ -82,34 +84,52 @@ class AzureStorageHandler:
                 logger.warning("Azure Storage not configured, skipping cache lookup")
                 add_span_attributes(span, configured=False)
                 return None
-                
-            try:
-                blob_client = self.blob_service_client.get_blob_client(
-                    container=self.container_name,
-                    blob=blob_name
-                )
-                
-                # Check if blob exists
-                if blob_client.exists():
-                    audio_data = blob_client.download_blob().readall()
-                    logger.info(f"Retrieved cached audio: {blob_name}, size: {len(audio_data)} bytes")
-                    add_span_attributes(span, found=True, size_bytes=len(audio_data))
-                    return audio_data
-                else:
-                    logger.debug(f"Cached audio not found: {blob_name}")
-                    add_span_attributes(span, found=False)
-                    return None
+            
+            def _fetch_blob():
+                """Internal function to fetch blob data"""
+                try:
+                    blob_client = self.blob_service_client.get_blob_client(
+                        container=self.container_name,
+                        blob=blob_name
+                    )
                     
-            except ResourceNotFoundError:
-                logger.debug(f"Cached audio not found: {blob_name}")
-                add_span_attributes(span, found=False)
-                return None
-            except AzureError as e:
-                logger.error(f"Azure Storage error retrieving {blob_name}: {str(e)}")
-                record_exception(span, e)
-                return None
+                    # Check if blob exists
+                    if blob_client.exists():
+                        audio_data = blob_client.download_blob().readall()
+                        logger.info(f"Retrieved cached audio: {blob_name}, size: {len(audio_data)} bytes")
+                        return audio_data
+                    else:
+                        logger.debug(f"Cached audio not found: {blob_name}")
+                        return None
+                        
+                except ResourceNotFoundError:
+                    logger.debug(f"Cached audio not found: {blob_name}")
+                    return None
+                except AzureError as e:
+                    logger.error(f"Azure Storage error retrieving {blob_name}: {str(e)}")
+                    raise e
+                except Exception as e:
+                    logger.error(f"Unexpected error retrieving cached audio {blob_name}: {str(e)}")
+                    raise e
+            
+            # Execute with timeout
+            try:
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(_fetch_blob)
+                    try:
+                        audio_data = future.result(timeout=3.0)  # 3 second timeout
+                        if audio_data:
+                            add_span_attributes(span, found=True, size_bytes=len(audio_data))
+                        else:
+                            add_span_attributes(span, found=False)
+                        return audio_data
+                    except concurrent.futures.TimeoutError:
+                        logger.warning(f"Timeout retrieving cached audio: {blob_name} (3s)")
+                        add_span_attributes(span, found=False, timeout=True)
+                        return None
+                        
             except Exception as e:
-                logger.error(f"Unexpected error retrieving cached audio {blob_name}: {str(e)}")
+                logger.error(f"Error retrieving cached audio {blob_name}: {str(e)}")
                 record_exception(span, e)
                 return None
     
@@ -124,46 +144,30 @@ class AzureStorageHandler:
         if not self.blob_service_client:
             logger.warning("Azure Storage not configured, skipping cache save")
             return
-            
-        # Run the upload in background without blocking
-        asyncio.create_task(self._upload_audio(blob_name, audio_data))
-    
-    async def _upload_audio(self, blob_name: str, audio_data: bytes):
-        """
-        Internal method to upload audio to Azure Storage
         
-        Args:
-            blob_name: The blob name
-            audio_data: Audio data as bytes
-        """
-        with telemetry_span("azure_storage.upload_blob", {
-            "azure.storage.operation": "upload_blob",
-            "azure.storage.container": self.container_name,
-            "azure.storage.blob": blob_name,
-            "size_bytes": len(audio_data)
-        }) as span:
+        # Use thread pool for async upload to avoid event loop issues
+        def _upload_sync():
             try:
                 blob_client = self.blob_service_client.get_blob_client(
                     container=self.container_name,
                     blob=blob_name
                 )
                 
-                # Upload with MP3 content type
+                # Upload with WAV content type (updated from MP3)
                 blob_client.upload_blob(
                     audio_data,
-                    content_type="audio/mpeg",
+                    content_type="audio/wav",
                     overwrite=True
                 )
                 
                 logger.info(f"Successfully cached audio: {blob_name}, size: {len(audio_data)} bytes")
-                add_span_attributes(span, success=True)
                 
-            except AzureError as e:
-                logger.error(f"Azure Storage error saving {blob_name}: {str(e)}")
-                record_exception(span, e)
             except Exception as e:
-                logger.error(f"Unexpected error saving audio {blob_name}: {str(e)}")
-                record_exception(span, e)
+                logger.error(f"Error saving audio {blob_name}: {str(e)}")
+        
+        # Run upload in a background thread
+        thread = threading.Thread(target=_upload_sync, daemon=True)
+        thread.start()
     
     def delete_cached_audio(self, blob_name: str) -> bool:
         """

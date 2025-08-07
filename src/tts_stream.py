@@ -7,6 +7,8 @@ import logging
 import requests
 import time
 import re
+import threading
+import concurrent.futures
 from datetime import datetime
 from typing import Optional, Callable, Dict, Any, List
 from dataclasses import dataclass
@@ -291,7 +293,7 @@ class TTSStreamer:
     """
     
     def __init__(self, org_config: OrgConfigData, language: str, 
-                 audio_callback: Optional[Callable[[str, bytes], None]] = None,
+                 audio_callback: Optional[Callable[[str, bytes, int], None]] = None,
                  min_words: int = 4, remove_bracketed_words: bool = False):
         """
         Initialize TTS streamer with organization configuration for a specific language
@@ -299,7 +301,7 @@ class TTSStreamer:
         Args:
             org_config: Organization configuration containing TTS settings
             language: Language code for all text chunks
-            audio_callback: Callback for when audio chunks are ready (text, audio_data)
+            audio_callback: Callback for when audio chunks are ready (text, audio_data, order)
             min_words: Minimum words before triggering TTS (kept for backward compatibility)
             remove_bracketed_words: Whether to remove text in brackets
             
@@ -332,6 +334,10 @@ class TTSStreamer:
         # Current chunk being built
         self.current_chunk = TTSChunk("")
         self.chunk_order = 0  # Track order for SSML generation
+        
+        # Track active background threads for speech generation
+        self._active_threads = []
+        self._thread_lock = threading.Lock()
         
         logger.info(f"Initialized TTS streamer for language: {language}, model: {self.model.name}, break-triggered processing enabled")
     
@@ -389,7 +395,7 @@ class TTSStreamer:
     
     def flush(self) -> None:
         """
-        Process any remaining text in the current chunk
+        Process any remaining text in the current chunk and wait for all background threads to complete
         """
         if not self.current_chunk.is_empty():
             # First check if there are any <break/> markers to process
@@ -403,15 +409,55 @@ class TTSStreamer:
                 text_to_process = self.current_chunk.text.replace("<break/>", "").strip()
                 
                 if text_to_process:  # Only process if there's actual content
-                    # Generate speech for remaining text
-                    audio_data = self._generate_speech(text_to_process)
+                    # Capture current order for the callback
+                    current_order = self.chunk_order
+                    # Generate speech for remaining text asynchronously
+                    def flush_callback(processed_text: str, audio_data: Optional[bytes]):
+                        # Trigger callback if audio was generated successfully
+                        if audio_data and self.audio_callback:
+                            self.audio_callback(processed_text, audio_data, current_order)
                     
-                    # Trigger callback if audio was generated successfully
-                    if audio_data and self.audio_callback:
-                        self.audio_callback(text_to_process, audio_data)
+                    self._generate_speech_async(text_to_process, flush_callback)
                 
                 # Clear the chunk
                 self.current_chunk = TTSChunk("")
+        
+        # Wait for all background speech generation threads to complete
+        self._wait_for_all_threads()
+    
+    def _wait_for_all_threads(self, timeout: float = 30.0) -> None:
+        """
+        Wait for all active background threads to complete
+        
+        Args:
+            timeout: Maximum time to wait in seconds
+        """
+        if not self._active_threads:
+            return
+        
+        logger.info(f"Waiting for {len(self._active_threads)} background speech generation threads to complete...")
+        
+        start_time = time.time()
+        while True:
+            with self._thread_lock:
+                active_threads = self._active_threads.copy()
+            
+            if not active_threads:
+                logger.info("All background speech generation threads completed")
+                break
+            
+            # Check for timeout
+            if time.time() - start_time > timeout:
+                logger.warning(f"Timeout waiting for background threads. {len(active_threads)} threads still active")
+                break
+            
+            # Wait for threads to complete
+            for thread in active_threads:
+                if thread.is_alive():
+                    thread.join(timeout=0.1)  # Short timeout to check periodically
+            
+            # Small delay to avoid busy waiting
+            time.sleep(0.01)
     
     def _process_current_chunk_with_break(self) -> None:
         """
@@ -436,12 +482,15 @@ class TTSStreamer:
             if text_for_speech:  # Only process if there's actual content
                 logger.info(f"Processing chunk with break: '{text_for_speech[:100]}...'")
                 
-                # Generate speech for this chunk
-                audio_data = self._generate_speech(text_for_speech)
+                # Capture current order for the callback
+                current_order = self.chunk_order
+                # Generate speech for this chunk asynchronously
+                def break_callback(processed_text: str, audio_data: Optional[bytes]):
+                    # Trigger callback if audio was generated successfully
+                    if audio_data and self.audio_callback:
+                        self.audio_callback(processed_text, audio_data, current_order)
                 
-                # Trigger callback if audio was generated successfully
-                if audio_data and self.audio_callback:
-                    self.audio_callback(text_for_speech, audio_data)
+                self._generate_speech_async(text_for_speech, break_callback)
             
             # Create new chunk with any remaining text after <break/>
             self.current_chunk = TTSChunk(remaining_text.strip())
@@ -476,12 +525,15 @@ class TTSStreamer:
         
         logger.info(f"Processing chunk: '{text_to_process[:100]}...' ({len(words_to_process) if len(words) > 1 else len(words)} words)")
         
-        # Generate speech for this chunk
-        audio_data = self._generate_speech(text_to_process)
+        # Capture current order for the callback
+        current_order = self.chunk_order
+        # Generate speech for this chunk asynchronously
+        def chunk_callback(processed_text: str, audio_data: Optional[bytes]):
+            # Trigger callback if audio was generated successfully
+            if audio_data and self.audio_callback:
+                self.audio_callback(processed_text, audio_data, current_order)
         
-        # Trigger callback if audio was generated successfully
-        if audio_data and self.audio_callback:
-            self.audio_callback(text_to_process, audio_data)
+        self._generate_speech_async(text_to_process, chunk_callback)
         
         # Create new chunk starting with the last word (if any)
         self.current_chunk = TTSChunk(last_word if last_word else "")
@@ -504,6 +556,38 @@ class TTSStreamer:
         except Exception as e:
             logger.error(f"Error generating speech: {str(e)}")
             return None 
+
+    def _generate_speech_async(self, text: str, callback: Callable[[str, Optional[bytes]], None]):
+        """
+        Generate speech asynchronously in a background thread
+        
+        Args:
+            text: Text to convert to speech
+            callback: Callback function to call with (text, audio_data) when complete
+        """
+        def _speech_worker():
+            try:
+                logger.debug(f"Starting background speech generation for: '{text[:50]}...'")
+                audio_data = self._generate_speech(text)
+                logger.debug(f"Background speech generation completed for: '{text[:50]}...'")
+                callback(text, audio_data)
+            except Exception as e:
+                logger.error(f"Error in background speech generation: {str(e)}")
+                callback(text, None)
+            finally:
+                # Remove thread from active list when done
+                with self._thread_lock:
+                    if thread in self._active_threads:
+                        self._active_threads.remove(thread)
+        
+        # Create and start background thread
+        thread = threading.Thread(target=_speech_worker, daemon=True)
+        
+        # Add to active threads list
+        with self._thread_lock:
+            self._active_threads.append(thread)
+        
+        thread.start() 
     
     def get_available_voices(self) -> Optional[List[Dict[str, Any]]]:
         """
