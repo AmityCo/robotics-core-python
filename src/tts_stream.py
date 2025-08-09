@@ -393,7 +393,7 @@ class TTSStreamer:
         if "<break/>" in self.current_chunk.text:
             self._process_current_chunk_with_break()
     
-    def flush(self) -> None:
+    def flush(self, wait_for_all_threads: bool = False) -> None:
         """
         Process any remaining text in the current chunk and wait for all background threads to complete
         """
@@ -423,7 +423,9 @@ class TTSStreamer:
                 self.current_chunk = TTSChunk("")
         
         # Wait for all background speech generation threads to complete
-        self._wait_for_all_threads()
+        if wait_for_all_threads:
+            logger.info("Waiting for all background speech generation threads to complete...")
+            self._wait_for_all_threads()
     
     def _wait_for_all_threads(self, timeout: float = 30.0) -> None:
         """

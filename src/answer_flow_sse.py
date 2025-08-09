@@ -625,7 +625,7 @@ async def _execute_answer_pipeline_background(sse_handler: SSEHandler, transcrip
             if tts_streamer:
                 try:
                     logger.info("Flushing remaining TTS content...")
-                    tts_streamer.flush()
+                    tts_streamer.flush(wait_for_all_threads=True)
                     logger.info("Successfully flushed remaining TTS content")
                     # Mark TTS as complete since the new API doesn't have completion callbacks
                     sse_handler.mark_component_complete('tts_processing')
