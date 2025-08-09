@@ -129,9 +129,9 @@ class RequestsHandler:
         return response
     
     def get_sync(self, url: str, timeout: Optional[int] = None, 
-                 **kwargs) -> Response:
+                 **kwargs) -> Union[Response, CachedResponse]:
         """
-        Synchronous GET request without caching (for compatibility)
+        Synchronous GET request with caching (for compatibility)
         
         Args:
             url: URL to request
@@ -139,9 +139,55 @@ class RequestsHandler:
             **kwargs: Additional arguments passed to requests.get
             
         Returns:
-            requests.Response object
+            Response object (either real requests.Response or CachedResponse)
         """
         actual_timeout = timeout or self.default_timeout
+        
+        # Check if this looks like a template URL that should be cached
+        should_cache = self._should_cache_url(url)
+        
+        if should_cache:
+            try:
+                # Try to get cached content synchronously
+                import asyncio
+                
+                # Check if we're already in an async context
+                try:
+                    loop = asyncio.get_running_loop()
+                    # We're in an async context, but need sync behavior
+                    # Create a new event loop in a thread for this sync call
+                    import concurrent.futures
+                    import threading
+                    
+                    def run_async_in_thread():
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        try:
+                            return new_loop.run_until_complete(self._fetch_url_content(url, actual_timeout))
+                        finally:
+                            new_loop.close()
+                    
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(run_async_in_thread)
+                        response_data = future.result()
+                        
+                except RuntimeError:
+                    # No event loop running, we can run directly
+                    response_data = asyncio.run(self._fetch_url_content(url, actual_timeout))
+                
+                # Return cached response object
+                return CachedResponse(
+                    text=response_data['text'],
+                    status_code=response_data['status_code'],
+                    encoding=response_data['encoding'],
+                    headers=response_data['headers'],
+                    url=response_data['url']
+                )
+            except Exception as e:
+                logger.warning(f"Cache fetch failed for {url}, falling back to direct request: {str(e)}")
+                # Fall through to direct request
+        
+        # For non-cacheable URLs or cache failures, make direct request
         response = requests.get(url, timeout=actual_timeout, **kwargs)
         response.encoding = 'utf-8'  # Always ensure UTF-8 encoding
         return response
@@ -190,9 +236,9 @@ async def get(url: str, timeout: Optional[int] = None, **kwargs) -> Union[Respon
     """
     return await _requests_handler.get(url, timeout, **kwargs)
 
-def get_sync(url: str, timeout: Optional[int] = None, **kwargs) -> Response:
+def get_sync(url: str, timeout: Optional[int] = None, **kwargs) -> Union[Response, CachedResponse]:
     """
-    Synchronous GET request without caching - for compatibility
+    Synchronous GET request with caching - for compatibility
     
     Args:
         url: URL to request
@@ -200,7 +246,7 @@ def get_sync(url: str, timeout: Optional[int] = None, **kwargs) -> Response:
         **kwargs: Additional arguments passed to requests.get
         
     Returns:
-        requests.Response object with UTF-8 encoding
+        Response object (either real requests.Response or CachedResponse) with UTF-8 encoding
     """
     return _requests_handler.get_sync(url, timeout, **kwargs)
 

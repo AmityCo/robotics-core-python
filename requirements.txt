@@ -17,3 +17,4 @@ opentelemetry-instrumentation-requests==0.48b0
 opentelemetry-instrumentation-boto3sqs==0.48b0
 azure-monitor-opentelemetry-exporter==1.0.0b27
 numpy==1.26.4
+groq==0.31.0

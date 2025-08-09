@@ -25,8 +25,13 @@ class SSEHandler:
 
         # Registry for tracking multiple completion states
         self._completion_registry = {}
+        
+        # Order tracking for messages
+        self._current_order = 0
+        self._pending_ordered_messages = {}  # Dict[int, str] - order -> message
+        self._order_lock = threading.Lock()
 
-    def send(self, message_type: str, data: Any = None, message: str = None):
+    def send(self, message_type: str, data: Any = None, message: str = None, order: int = None):
         """
         Send an SSE message. Thread-safe method that can be called from any thread.
 
@@ -34,6 +39,7 @@ class SSEHandler:
             message_type: Type of the SSE message (status, error, answer_chunk, etc.)
             data: Data payload for the message
             message: Simple message string (used for status/error messages)
+            order: Optional order number for guaranteed sequential emission
         """
         sse_data = {
             'type': message_type,
@@ -45,12 +51,55 @@ class SSEHandler:
         if message is not None:
             sse_data['message'] = message
 
-        # Put the formatted SSE message into the queue
+        # Format the SSE message
         sse_message = f"data: {json.dumps(sse_data)}\n\n"
-        self.queue.put(sse_message)
+        
+        if order is not None:
+            # Handle ordered message
+            self._handle_ordered_message(sse_message, order)
+        else:
+            # Put non-ordered message directly into the queue
+            self.queue.put(sse_message)
+        
         # log for non answer_chunk
         if message_type not in ['answer_chunk']:
-            logger.info(f"SSE message queued: {message_type} with message '{message}'")
+            logger.info(f"SSE message queued: {message_type} with message '{message}'{' (order: ' + str(order) + ')' if order is not None else ''}")
+
+    def _handle_ordered_message(self, sse_message: str, order: int):
+        """
+        Handle ordered message emission to ensure sequential delivery.
+        
+        Args:
+            sse_message: Formatted SSE message
+            order: Order number for the message
+        """
+        with self._order_lock:
+            # If this order is next in sequence, emit it and any subsequent pending messages
+            if order <= self._current_order:
+                # This message can be sent immediately (order is current or lower)
+                self.queue.put(sse_message)
+                logger.debug(f"Emitted message with order {order} immediately (current order: {self._current_order})")
+                
+                # Update current order only if this order is exactly the next expected
+                if order == self._current_order:
+                    self._current_order += 1
+                    # Check if we can emit any pending messages
+                    self._emit_pending_messages()
+            else:
+                # Store message for later emission
+                self._pending_ordered_messages[order] = sse_message
+                logger.debug(f"Stored message with order {order} for later emission (current order: {self._current_order})")
+
+    def _emit_pending_messages(self):
+        """
+        Emit any pending ordered messages that are now ready to be sent.
+        Must be called while holding _order_lock.
+        """
+        while self._current_order in self._pending_ordered_messages:
+            message = self._pending_ordered_messages.pop(self._current_order)
+            self.queue.put(message)
+            logger.debug(f"Emitted pending message with order {self._current_order}")
+            self._current_order += 1
 
     def send_error(self, error_message: str):
         """Send an error message and mark that an error occurred."""
